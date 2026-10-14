@@ -33,10 +33,10 @@ Plain Pegasus can display the theme, browse, filter, and keep games in theme mem
 git clone https://github.com/mmatyas/pegasus-frontend.git pegasus-source
 git -C pegasus-source checkout 5d58223e58f84afb31d5d14a67438841b981a6fa
 python3 tools/check_native_patch.py pegasus-source
-git -C pegasus-source apply ../nova-frontend/native/nova-library.patch
+git -C pegasus-source apply ../native/nova-library.patch
 ```
 
-Adjust the last relative path to your checkout location. The checker is read-only and rejects the wrong base or dirty checkout. It does not download dependencies or change the upstream source tree. Fetch upstream submodules and build using the upstream instructions for that exact revision; this repository does not provide a verified portable Android build recipe. The bridge's Qt test project is included in the patch.
+Run these commands from this repository's root. The checker is read-only and rejects the wrong base or dirty checkout. It does not download dependencies or change the upstream source tree. Fetch upstream submodules and build using the upstream instructions for that exact revision; this repository does not provide a verified portable Android build recipe. The bridge's Qt test project is included in the patch.
 
 The patch adds SQLite-backed offline actions, snapshot validation, conflict retention, optional synchronization, Android credential storage, and Linux Secret Service integration. The private server implementation, enrollment, tokens, inventories and user ledger are deliberately absent. No service is required for the theme or synthetic demo. Sync requires a compatible service and separately provisioned device capability; this repository is not a turnkey server deployment.
 
