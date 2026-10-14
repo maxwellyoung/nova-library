@@ -1,0 +1,22 @@
+# Private libraries, credentials, device observations and generated output.
+runtime/
+input/
+library/
+evidence/
+outputs/
+demo/generated/
+build/
+.venv/
+__pycache__/
+*.pyc
+*.apk
+*.aab
+*.sqlite*
+*.db
+*.log
+*.vault
+enrollment.json
+config.local.json
+.env*
+.DS_Store
+._*

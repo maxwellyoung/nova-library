@@ -1,0 +1,2 @@
+# Patch context must retain its literal whitespace for application.
+native/*.patch -whitespace

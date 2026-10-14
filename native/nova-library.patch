@@ -1,0 +1,1329 @@
+diff --git a/.qmake.conf b/.qmake.conf
+index 5dea750..539b9c9 100644
+--- a/.qmake.conf
++++ b/.qmake.conf
+@@ -2,22 +2,19 @@ TOP_SRCDIR=$$PWD
+ TOP_BUILDDIR=$$shadowed($$PWD)
+ 
+ GIT_REVISION = $$system(git \
+-    --git-dir \"$${TOP_SRCDIR}/.git\" \
+-    --work-tree \"$${TOP_SRCDIR}\" \
++    -C \"$${TOP_SRCDIR}\" \
+     describe \
+     --always --dirty)
+ 
+ GIT_DATE = $$system(git \
+-    --git-dir \"$${TOP_SRCDIR}/.git\" \
+-    --work-tree \"$${TOP_SRCDIR}\" \
++    -C \"$${TOP_SRCDIR}\" \
+     log \
+     -1 \
+     --format=%cd \
+     --date=short)
+ 
+ GIT_COMMIT_CNT = $$system(git \
+-    --git-dir \"$${TOP_SRCDIR}/.git\" \
+-    --work-tree \"$${TOP_SRCDIR}\" \
++    -C \"$${TOP_SRCDIR}\" \
+     rev-list \
+     --count HEAD)
+ 
+diff --git a/src/app/install.pri b/src/app/install.pri
+index ba9b59c..c42e76c 100644
+--- a/src/app/install.pri
++++ b/src/app/install.pri
+@@ -87,6 +87,7 @@ android {
+         platform/android/src/org/pegasus_frontend/android/IntentHelper.java \
+         platform/android/src/org/pegasus_frontend/android/LaunchFileProvider.java \
+         platform/android/src/org/pegasus_frontend/android/MainActivity.java \
++        platform/android/src/org/pegasus_frontend/android/DeviceLibraryVault.java \
+         platform/android/res/values/colors.xml \
+         platform/android/res/values/themes.xml \
+         platform/android/res/values/libs.xml \
+@@ -101,22 +102,25 @@ android {
+     }
+     ANDROID_MANIFEST_OUT = $${ANDROID_CFGDIR_OUT}/AndroidManifest.xml
+ 
+-    # TODO: make this cross-platform
++    # Avoid platform-specific sed -i syntax and repeated nested directory copies.
+     QMAKE_POST_LINK += \
+-        $${QMAKE_COPY_DIR} $$shell_path($$ANDROID_CFGDIR_IN) $$shell_path($$ANDROID_CFGDIR_OUT) && \
+-        sed -i s/@GIT_REVISION@/$${GIT_REVISION}/ $$shell_path($$ANDROID_MANIFEST_OUT) && \
+-        sed -i s/@GIT_COMMIT_CNT@/$${GIT_COMMIT_CNT}/ $$shell_path($$ANDROID_MANIFEST_OUT)
++        mkdir -p $$shell_path($$ANDROID_CFGDIR_OUT) && \
++        $${QMAKE_COPY_DIR} $$shell_path($${ANDROID_CFGDIR_IN}/.) $$shell_path($$ANDROID_CFGDIR_OUT) && \
++        sed -e s/@GIT_REVISION@/$${GIT_REVISION}/ -e s/@GIT_COMMIT_CNT@/$${GIT_COMMIT_CNT}/ \
++            $$shell_path($$ANDROID_MANIFEST_OUT) > $$shell_path($${ANDROID_MANIFEST_OUT}.patched) && \
++        $${QMAKE_MOVE} $$shell_path($${ANDROID_MANIFEST_OUT}.patched) $$shell_path($$ANDROID_MANIFEST_OUT)
+ 
+     ANDROID_PACKAGE_SOURCE_DIR = $${ANDROID_CFGDIR_OUT}
++    isEmpty(OPENSSL_ANDROID_ROOT): OPENSSL_ANDROID_ROOT = /opt
+     ANDROID_EXTRA_LIBS += \
+-        /opt/openssl-111t_android-arm/lib/libcrypto.so \
+-        /opt/openssl-111t_android-arm/lib/libssl.so \
+-        /opt/openssl-111t_android-arm64/lib/libcrypto.so \
+-        /opt/openssl-111t_android-arm64/lib/libssl.so \
+-        /opt/openssl-111t_android-x86/lib/libcrypto.so \
+-        /opt/openssl-111t_android-x86/lib/libssl.so \
+-        /opt/openssl-111t_android-x86_64/lib/libcrypto.so \
+-        /opt/openssl-111t_android-x86_64/lib/libssl.so
++        $${OPENSSL_ANDROID_ROOT}/openssl-111t_android-arm/lib/libcrypto.so \
++        $${OPENSSL_ANDROID_ROOT}/openssl-111t_android-arm/lib/libssl.so \
++        $${OPENSSL_ANDROID_ROOT}/openssl-111t_android-arm64/lib/libcrypto.so \
++        $${OPENSSL_ANDROID_ROOT}/openssl-111t_android-arm64/lib/libssl.so \
++        $${OPENSSL_ANDROID_ROOT}/openssl-111t_android-x86/lib/libcrypto.so \
++        $${OPENSSL_ANDROID_ROOT}/openssl-111t_android-x86/lib/libssl.so \
++        $${OPENSSL_ANDROID_ROOT}/openssl-111t_android-x86_64/lib/libcrypto.so \
++        $${OPENSSL_ANDROID_ROOT}/openssl-111t_android-x86_64/lib/libssl.so
+ }
+ 
+ 
+diff --git a/src/app/platform/android/AndroidManifest.xml b/src/app/platform/android/AndroidManifest.xml
+index d98303b..f062941 100644
+--- a/src/app/platform/android/AndroidManifest.xml
++++ b/src/app/platform/android/AndroidManifest.xml
+@@ -1,6 +1,6 @@
+ <?xml version="1.0"?>
+ <manifest
+-    package="org.pegasus_frontend.android"
++    package="info.maxwellyoung.library"
+     xmlns:android="http://schemas.android.com/apk/res/android"
+     android:versionName="@GIT_REVISION@"
+     android:versionCode="@GIT_COMMIT_CNT@"
+@@ -8,23 +8,24 @@
+     <application
+         android:hardwareAccelerated="true"
+         android:name="org.qtproject.qt5.android.bindings.QtApplication"
+-        android:label="Pegasus"
++        android:label="Personal Library"
+         android:icon="@mipmap/icon"
+         android:banner="@mipmap/banner"
+         android:extractNativeLibs="true"
++        android:allowBackup="false"
++        android:usesCleartextTraffic="true"
+         android:requestLegacyExternalStorage="true">
+         <activity
+             android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation|mcc|mnc|density"
+-            android:name=".MainActivity"
+-            android:label="Pegasus"
++            android:name="org.pegasus_frontend.android.MainActivity"
++            android:exported="true"
++            android:label="Personal Library"
+             android:screenOrientation="userLandscape"
+-            android:launchMode="singleTop"
++            android:launchMode="singleTask"
+             android.theme="@style/PegasusMain">
+ 
+             <intent-filter>
+                 <action android:name="android.intent.action.MAIN" />
+-                <category android:name="android.intent.category.LAUNCHER" />
+-                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                 <category android:name="android.intent.category.HOME" />
+                 <category android:name="android.intent.category.DEFAULT" />
+             </intent-filter>
+@@ -70,11 +71,23 @@
+ 
+         <provider
+             android:name="org.pegasus_frontend.android.LaunchFileProvider"
+-            android:authorities="org.pegasus_frontend.android.files"
++            android:authorities="info.maxwellyoung.library.files"
+             android:grantUriPermissions="true"
+             android:exported="false">
+             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/fileprovider_paths" />
+         </provider>
++        <!-- Icon launches must enter the same HOME task as Android's Home button.
++             Two Qt activities in one process otherwise leave the return screen blank. -->
++        <activity android:name="org.pegasus_frontend.android.LibraryEntryActivity"
++                  android:exported="true" android:noHistory="true"
++                  android:excludeFromRecents="true" android:taskAffinity=""
++                  android:theme="@android:style/Theme.NoDisplay">
++            <intent-filter>
++                <action android:name="android.intent.action.MAIN" />
++                <category android:name="android.intent.category.LAUNCHER" />
++                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
++            </intent-filter>
++        </activity>
+     </application>
+ 
+     <supports-screens
+diff --git a/src/app/platform/android/src/org/pegasus_frontend/android/DeviceLibraryVault.java b/src/app/platform/android/src/org/pegasus_frontend/android/DeviceLibraryVault.java
+new file mode 100644
+index 0000000..9e27169
+--- /dev/null
++++ b/src/app/platform/android/src/org/pegasus_frontend/android/DeviceLibraryVault.java
+@@ -0,0 +1,71 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++package org.pegasus_frontend.android;
++
++import android.content.Context;
++import android.security.keystore.KeyGenParameterSpec;
++import android.security.keystore.KeyProperties;
++import org.json.JSONObject;
++import org.qtproject.qt5.android.QtNative;
++import java.io.File;
++import java.io.FileInputStream;
++import java.io.FileOutputStream;
++import java.security.KeyStore;
++import javax.crypto.Cipher;
++import javax.crypto.KeyGenerator;
++import javax.crypto.SecretKey;
++import javax.crypto.spec.GCMParameterSpec;
++
++/** Enrollment is injected into app-private files/enrollment.json by the operator.
++ * It is consumed only after an encrypted durable vault exists. Nothing is logged. */
++public final class DeviceLibraryVault {
++    private static final String ALIAS = "device-library-capability-v1";
++    private DeviceLibraryVault() {}
++    private static Context context() { return QtNative.activity().getApplicationContext(); }
++    public static String storagePath() {
++        File dir = new File(context().getFilesDir(), "device-library");
++        if (!dir.exists() && !dir.mkdirs()) throw new IllegalStateException("Private storage unavailable");
++        return dir.getAbsolutePath();
++    }
++    private static byte[] read(File file, int limit) throws Exception {
++        if (file.length() > limit) throw new IllegalArgumentException("Enrollment too large");
++        byte[] data = new byte[(int) file.length()];
++        try (FileInputStream input = new FileInputStream(file)) {
++            int offset = 0;
++            while (offset < data.length) { int n = input.read(data, offset, data.length - offset); if (n < 0) throw new IllegalArgumentException("Incomplete enrollment"); offset += n; }
++        }
++        return data;
++    }
++    private static SecretKey key() throws Exception {
++        KeyStore store = KeyStore.getInstance("AndroidKeyStore"); store.load(null);
++        if (!store.containsAlias(ALIAS)) {
++            KeyGenerator gen = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
++            gen.init(new KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT | KeyProperties.PURPOSE_DECRYPT)
++                .setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).build());
++            gen.generateKey();
++        }
++        return (SecretKey) store.getKey(ALIAS, null);
++    }
++    public static synchronized String enrollment() {
++        try {
++            File input = new File(context().getFilesDir(), "enrollment.json");
++            File vault = new File(storagePath(), "enrollment.vault");
++            if (input.exists()) {
++                byte[] plain = read(input, 16384);
++                JSONObject o = new JSONObject(new String(plain, "UTF-8"));
++                if (o.optString("endpoint").isEmpty() || o.optString("deviceId").isEmpty() || o.optString("token").isEmpty()) return "{}";
++                Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding"); cipher.init(Cipher.ENCRYPT_MODE, key());
++                byte[] iv = cipher.getIV(), ciphertext = cipher.doFinal(plain);
++                File temp = new File(vault.getParentFile(), "enrollment.vault.tmp");
++                try (FileOutputStream out = new FileOutputStream(temp)) { out.write(iv.length); out.write(iv); out.write(ciphertext); out.getFD().sync(); }
++                if (!temp.renameTo(vault)) throw new IllegalStateException("Vault commit failed");
++                if (!input.delete()) return "{}";
++            }
++            if (!vault.exists()) return "{}";
++            byte[] encrypted = read(vault, 32768); int ivSize = encrypted[0] & 255;
++            if (ivSize != 12 || encrypted.length <= 1 + ivSize) return "{}";
++            Cipher cipher = Cipher.getInstance("AES/GCM/NoPadding");
++            cipher.init(Cipher.DECRYPT_MODE, key(), new GCMParameterSpec(128, encrypted, 1, ivSize));
++            return new String(cipher.doFinal(encrypted, 1 + ivSize, encrypted.length - 1 - ivSize), "UTF-8");
++        } catch (Exception ignored) { return "{}"; }
++    }
++}
+diff --git a/src/app/platform/android/src/org/pegasus_frontend/android/LibraryEntryActivity.java b/src/app/platform/android/src/org/pegasus_frontend/android/LibraryEntryActivity.java
+new file mode 100644
+index 0000000..f649ce7
+--- /dev/null
++++ b/src/app/platform/android/src/org/pegasus_frontend/android/LibraryEntryActivity.java
+@@ -0,0 +1,19 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++package org.pegasus_frontend.android;
++
++import android.app.Activity;
++import android.content.Intent;
++import android.os.Bundle;
++
++/** Routes the app icon into the existing Home task before Qt is initialized. */
++public final class LibraryEntryActivity extends Activity {
++    @Override protected void onCreate(Bundle state) {
++        super.onCreate(state);
++        Intent home = new Intent(Intent.ACTION_MAIN);
++        home.addCategory(Intent.CATEGORY_HOME);
++        home.setClass(this, MainActivity.class);
++        home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
++        startActivity(home);
++        finish();
++    }
++}
+diff --git a/src/app/platform/android/src/org/pegasus_frontend/android/MainActivity.java b/src/app/platform/android/src/org/pegasus_frontend/android/MainActivity.java
+index 9eedd0b..ef5536f 100644
+--- a/src/app/platform/android/src/org/pegasus_frontend/android/MainActivity.java
++++ b/src/app/platform/android/src/org/pegasus_frontend/android/MainActivity.java
+@@ -246,7 +246,31 @@ public class MainActivity extends org.qtproject.qt5.android.bindings.QtActivity
+             Intent intent = IntentHelper.parseIntentCommand(args);
+             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+             intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+-            m_self.startActivity(intent);
++            final android.content.ComponentName target = intent.getComponent();
++            if (target != null && target.getPackageName().equals("xyz.aethersx2.android")
++                    && target.getClassName().equals("xyz.aethersx2.android.EmulationActivity")) {
++                // Classic NetherSX2 initializes its native context in MainActivity.
++                // Opening EmulationActivity in a cold process otherwise crashes.
++                final Context context = m_self.getApplicationContext();
++                final Intent gameIntent = intent;
++                Intent warmup = new Intent(Intent.ACTION_MAIN);
++                warmup.setClassName("xyz.aethersx2.android", "xyz.aethersx2.android.MainActivity");
++                // Initialize behind this visible launcher. A foreground warm-up
++                // would make Android reject the delayed game as a background start.
++                warmup.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_NEW_DOCUMENT
++                        | Intent.FLAG_ACTIVITY_MULTIPLE_TASK | Intent.FLAG_ACTIVITY_NO_ANIMATION);
++                context.startActivity(warmup, android.app.ActivityOptions.makeTaskLaunchBehind().toBundle());
++                new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
++                    @Override public void run() {
++                        try { context.startActivity(gameIntent); }
++                        catch (Exception e) {
++                            android.widget.Toast.makeText(context, "Couldn't open the PS2 game.", android.widget.Toast.LENGTH_LONG).show();
++                        }
++                    }
++                }, 1000);
++            } else {
++                m_self.startActivity(intent);
++            }
+         }
+         catch (Exception e) {
+             return e.toString() + ": " + e.getMessage();
+@@ -258,7 +282,7 @@ public class MainActivity extends org.qtproject.qt5.android.bindings.QtActivity
+     public static String toContentUri(String path) {
+         final Uri uri = FileProvider.getUriForFile(
+             m_self,
+-            "org.pegasus_frontend.android.files",
++            m_self.getPackageName() + ".files",
+             new File(path));
+         return uri.toString();
+     }
+diff --git a/src/backend/CMakeLists.txt b/src/backend/CMakeLists.txt
+index 08de0be..ea9f75e 100644
+--- a/src/backend/CMakeLists.txt
++++ b/src/backend/CMakeLists.txt
+@@ -5,6 +5,9 @@ set(USE_SDL2 OFF CACHE INTERNAL "")
+ 
+ 
+ add_library(pegasus-backend
++    library/DeviceLibrary.cpp
++    library/DeviceLibrary.h
++    library/PlatformEnrollment.cpp
+     AppSettings.cpp
+     AppSettings.h
+     Backend.cpp
+@@ -42,6 +45,7 @@ pegasus_require_qt(COMPONENTS
+     Quick
+     Multimedia
+     Sql
++    Network
+     Svg
+ )
+ target_link_libraries(pegasus-backend PUBLIC
+@@ -49,10 +53,16 @@ target_link_libraries(pegasus-backend PUBLIC
+     Qt::Quick
+     Qt::Multimedia
+     Qt::Sql
++    Qt::Network
+     Qt::Svg
+     SortFilterProxyModel
+ )
+ 
++if(PEGASUS_ON_ANDROID)
++    find_package(Qt5 5.15 COMPONENTS AndroidExtras REQUIRED)
++    target_link_libraries(pegasus-backend PUBLIC Qt5::AndroidExtras)
++endif()
++
+ include(PegasusCommonProps)
+ pegasus_add_common_props_optimized(pegasus-backend)
+ 
+diff --git a/src/backend/FrontendLayer.cpp b/src/backend/FrontendLayer.cpp
+index 7ba8bf0..d75f4b0 100644
+--- a/src/backend/FrontendLayer.cpp
++++ b/src/backend/FrontendLayer.cpp
+@@ -18,6 +18,7 @@
+ #include "FrontendLayer.h"
+ 
+ #include "Paths.h"
++#include "library/DeviceLibrary.h"
+ #include "imggen/BlurhashProvider.h"
+ #include "utils/DiskCachedNAM.h"
+ 
+@@ -25,6 +26,7 @@
+ #include "platform/AndroidAppIconProvider.h"
+ #endif
+ 
++#include <QGuiApplication>
+ #include <QQmlApplicationEngine>
+ #include <QQmlContext>
+ #include <QQmlNetworkAccessManagerFactory>
+@@ -50,7 +52,11 @@ FrontendLayer::FrontendLayer(QObject* const api_public, QObject* const api_priva
+     , m_api_public(api_public)
+     , m_api_private(api_private)
+     , m_engine(nullptr)
++    , m_device_library(new library::DeviceLibrary(this))
+ {
++    connect(qApp, &QGuiApplication::applicationStateChanged, m_device_library, [this](Qt::ApplicationState state) {
++        if (state == Qt::ApplicationActive) m_device_library->synchronize();
++    });
+     // Note: the pointer to the Api is non-owning and constant during the runtime
+ }
+ 
+@@ -68,10 +74,12 @@ void FrontendLayer::rebuild()
+     m_engine->addImageProvider(QStringLiteral("androidicons"), new AndroidAppIconProvider);
+ #endif
+ 
++    m_engine->rootContext()->setContextProperty(QStringLiteral("deviceLibrary"), m_device_library);
+     m_engine->rootContext()->setContextProperty(QStringLiteral("api"), m_api_public);
+     m_engine->rootContext()->setContextProperty(QStringLiteral("Api"), m_api_public);
+     m_engine->rootContext()->setContextProperty(QStringLiteral("Internal"), m_api_private);
+     m_engine->load(QUrl(QStringLiteral("qrc:/frontend/main.qml")));
++    m_device_library->synchronize();
+ 
+     emit rebuildComplete();
+ }
+diff --git a/src/backend/FrontendLayer.h b/src/backend/FrontendLayer.h
+index 1882771..4c05312 100644
+--- a/src/backend/FrontendLayer.h
++++ b/src/backend/FrontendLayer.h
+@@ -20,6 +20,7 @@
+ #include <QObject>
+ 
+ class QQmlApplicationEngine;
++namespace library { class DeviceLibrary; }
+ 
+ 
+ /// Manages the dynamic reload of the frontend layer
+@@ -50,4 +51,5 @@ private:
+     QObject* const m_api_public;
+     QObject* const m_api_private;
+     QQmlApplicationEngine* m_engine;
++    library::DeviceLibrary* const m_device_library;
+ };
+diff --git a/src/backend/backend.pro b/src/backend/backend.pro
+index fd5fbf2..69d9250 100644
+--- a/src/backend/backend.pro
++++ b/src/backend/backend.pro
+@@ -1,6 +1,6 @@
+ TEMPLATE = lib
+ 
+-QT += qml quick sql
++QT += qml quick sql network
+ CONFIG += c++11 staticlib warn_on exceptions_off
+ android: QT += androidextras
+ 
+@@ -13,6 +13,8 @@ msvc: DEFINES *= _USE_MATH_DEFINES
+ 
+ 
+ SOURCES += \
++    library/DeviceLibrary.cpp \
++    library/PlatformEnrollment.cpp \
+     Backend.cpp \
+     FrontendLayer.cpp \
+     PegasusAssets.cpp \
+@@ -23,6 +25,7 @@ SOURCES += \
+     Log.cpp \
+ 
+ HEADERS += \
++    library/DeviceLibrary.h \
+     Backend.h \
+     CliArgs.h \
+     FrontendLayer.h \
+diff --git a/src/backend/library/DeviceLibrary.cpp b/src/backend/library/DeviceLibrary.cpp
+new file mode 100644
+index 0000000..5f6b8ee
+--- /dev/null
++++ b/src/backend/library/DeviceLibrary.cpp
+@@ -0,0 +1,327 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "DeviceLibrary.h"
++#include <QCryptographicHash>
++#include <QDir>
++#include <QFile>
++#include <QFileInfo>
++#include <QHostAddress>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QNetworkAccessManager>
++#include <QNetworkReply>
++#include <QNetworkRequest>
++#include <QSqlQuery>
++#include <QTimer>
++#include <QUuid>
++#include <QSet>
++#include <QSharedPointer>
++#include <cmath>
++#include <algorithm>
++
++namespace library {
++namespace {
++const int MaxBytes = 5 * 1024 * 1024;
++QByteArray json(const QVariantMap& m) { return QJsonDocument::fromVariant(m).toJson(QJsonDocument::Compact); }
++QVariantMap object(const QByteArray& b) { return QJsonDocument::fromJson(b).object().toVariantMap(); }
++bool identifier(const QVariant& v) { const QString s = v.toString(); return v.userType() == QMetaType::QString && !s.isEmpty() && s.size() <= 200 && std::none_of(s.begin(), s.end(), [](QChar c) { return c.unicode() < 32; }); }
++bool revision(const QVariant& v) { bool ok; double n = v.toDouble(&ok); return ok && n >= 0 && n <= 2147483646 && std::floor(n) == n && v.userType() != QMetaType::Bool; }
++// Validate every nested value before retaining a network payload. The bridge has no
++// remote launch vocabulary, even when a compromised server adds unknown fields.
++bool boundedValue(const QJsonValue& v, int depth, int& count) {
++    if (depth > 16 || ++count > 1000000) return false;
++    if (v.isString()) return v.toString().size() <= 65536;
++    if (v.isArray()) {
++        if (v.toArray().size() > 10000) return false;
++        for (const QJsonValue& item : v.toArray()) if (!boundedValue(item, depth + 1, count)) return false;
++    } else if (v.isObject()) {
++        const QSet<QString> forbidden = {"command", "launch", "launchCommand", "executable", "token", "authorization", "password", "endpoint", "bootstrapPath", "localPath", "path"};
++        const QJsonObject o = v.toObject();
++        for (auto it = o.begin(); it != o.end(); ++it) if (forbidden.contains(it.key()) || it.key().size() > 256 || !boundedValue(it.value(), depth + 1, count)) return false;
++    }
++    return true;
++}
++QString scope(const QVariantMap& a) { return a.value("type") == "thread-membership" ? "thread:" + a.value("threadId").toString() : "edition:" + a.value("editionId").toString(); }
++QVariantMap failure(const QString& error) { return {{"ok", false}, {"queued", false}, {"error", error}}; }
++void apply(QVariantMap& personal, const QVariantMap& a, const QString& state, const QVariantMap& receipt) {
++    QVariantMap entries = personal.value("entries").toMap();
++    QVariantList threads = personal.value("threads").toList();
++    QString type = a.value("type").toString();
++    if (type == "checkpoint" || type == "status" || type == "pin") {
++        const QString id = a.value("editionId").toString();
++        QVariantMap entry = entries.value(id).toMap();
++        if (!entry.contains("checkpoint")) entry["checkpoint"] = QString();
++        if (!entry.contains("status")) entry["status"] = "unknown";
++        if (type == "checkpoint") entry["checkpoint"] = a.value("text");
++        if (type == "status") entry["status"] = a.value("status");
++        if (type == "pin") entry["pinned"] = a.value("pinned");
++        entry["revision"] = state == "ack" ? receipt.value("revision") : a.value("expectedRevision").toInt() + 1;
++        entry["pending"] = entry.value("pending").toBool() || state == "pending";
++        if (state == "conflict") entry["conflict"] = receipt.value("conflict");
++        entries[id] = entry;
++    } else if (type == "thread-create" || type == "thread-keep") {
++        QString threadId = receipt.value("threadId", "local:" + a.value("actionId").toString()).toString();
++        QVariantMap thread = {{"threadId", threadId}, {"name", a.value("name")}, {"members", a.value("members", QVariantList())}, {"revision", 1}, {"pending", state == "pending"}, {"source", "manual"}};
++        threads.append(thread);
++    } else if (type == "thread-membership") {
++        for (int i = 0; i < threads.size(); ++i) {
++            QVariantMap thread = threads[i].toMap();
++            if (thread.value("threadId") != a.value("threadId")) continue;
++            QVariantList members = thread.value("members").toList();
++            members.removeAll(a.value("editionId"));
++            if (a.value("member").toBool()) members.append(a.value("editionId"));
++            thread["members"] = members;
++            thread["revision"] = a.value("expectedRevision").toInt() + 1;
++            thread["pending"] = thread.value("pending").toBool() || state == "pending";
++            if (state == "conflict") thread["conflict"] = receipt.value("conflict");
++            threads[i] = thread;
++        }
++    }
++    personal["entries"] = entries; personal["threads"] = threads;
++}
++}
++
++DeviceLibrary::DeviceLibrary(QObject* parent)
++#if defined(Q_OS_LINUX) && !defined(Q_OS_ANDROID)
++    : DeviceLibrary(platformStoragePath().isEmpty() ? QString() : platformStoragePath() + "/library.sqlite", platformEnrollment(), nullptr, parent) {}
++#else
++    : DeviceLibrary(platformStoragePath() + "/library.sqlite", platformEnrollment(), nullptr, parent) {}
++#endif
++DeviceLibrary::DeviceLibrary(const QString& path, const Enrollment& enrollment, QNetworkAccessManager* network, QObject* parent)
++    : QObject(parent), m_connection(QUuid::createUuid().toString()), m_enrollment(enrollment),
++      m_network(network ? network : new QNetworkAccessManager(this)) {
++    m_ready = initialize(path);
++    setState(m_ready ? "offline" : "unavailable", m_ready ? "Local library ready" : "Local database unavailable");
++    if (m_ready && snapshot().isEmpty() && !enrollment.bootstrapPath.isEmpty()) {
++        QFile seed(enrollment.bootstrapPath);
++        if (seed.open(QIODevice::ReadOnly) && seed.size() <= MaxBytes) acceptSnapshot(seed.read(MaxBytes + 1));
++    }
++}
++DeviceLibrary::~DeviceLibrary() { m_db.close(); m_db = QSqlDatabase(); QSqlDatabase::removeDatabase(m_connection); }
++bool DeviceLibrary::initialize(const QString& path) {
++    if (path.isEmpty()) return false;
++    if (path != ":memory:") {
++        QDir().mkpath(QFileInfo(path).absolutePath());
++        QFile::setPermissions(QFileInfo(path).absolutePath(), QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
++    }
++    m_db = QSqlDatabase::addDatabase("QSQLITE", m_connection); m_db.setDatabaseName(path);
++    if (!m_db.open()) return false;
++    if (path != ":memory:") QFile::setPermissions(path, QFileDevice::ReadOwner | QFileDevice::WriteOwner);
++    QSqlQuery q(m_db);
++    return q.exec("PRAGMA journal_mode=WAL") && q.exec("PRAGMA synchronous=FULL") &&
++        q.exec("CREATE TABLE IF NOT EXISTS snapshot (id INTEGER PRIMARY KEY CHECK(id=1), body BLOB NOT NULL)") &&
++        q.exec("CREATE TABLE IF NOT EXISTS actions (seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, body BLOB NOT NULL, state TEXT NOT NULL, receipt BLOB)");
++}
++QVariantMap DeviceLibrary::snapshot() const { QSqlQuery q(m_db); if (m_ready && q.exec("SELECT body FROM snapshot WHERE id=1") && q.next()) return object(q.value(0).toByteArray()); return {}; }
++void DeviceLibrary::setState(const QString& state, const QString& message) { m_state = state; m_message = message; emit statusChanged(); }
++QVariantMap DeviceLibrary::read(const QVariantMap&) const {
++    QVariantMap result = snapshot();
++    QVariantMap personal = result.value("personal").toMap();
++    if (!personal.contains("entries")) personal["entries"] = QVariantMap();
++    if (!personal.contains("threads")) personal["threads"] = QVariantList();
++    int pending = 0, conflicts = 0;
++    for (const QVariant& value : personal.value("entries").toMap()) {
++        const QVariant conflict = value.toMap().value("conflict");
++        if (!conflict.isNull() && (!conflict.toList().isEmpty() || !conflict.toMap().isEmpty())) ++conflicts;
++    }
++    for (const QVariant& value : personal.value("threads").toList()) if (!value.toMap().value("conflicts").toList().isEmpty()) ++conflicts;
++    QSqlQuery q(m_db);
++    if (m_ready && q.exec("SELECT body,state,receipt FROM actions WHERE state != 'folded' ORDER BY seq")) {
++        while (q.next()) {
++            const QString state = q.value(1).toString();
++            if (state == "pending") ++pending;
++            if (state == "conflict") ++conflicts;
++            apply(personal, object(q.value(0).toByteArray()), state, object(q.value(2).toByteArray()));
++        }
++    }
++    result["personal"] = personal;
++    if (!result.contains("recommendations")) result["recommendations"] = QVariantList();
++    if (!result.contains("threads")) result["threads"] = QVariantList();
++    result["sync"] = QVariantMap{{"state", conflicts ? "conflict" : m_state}, {"message", m_message}, {"pending", pending}, {"conflicts", conflicts}};
++    return result;
++}
++QVariantMap DeviceLibrary::act(const QVariantMap& input) {
++    if (!m_ready) return failure("database_unavailable");
++    QVariantMap a = input;
++    const QString type = a.value("type").toString();
++    QSet<QString> keys = {"type", "actionId", "expectedRevision"};
++    const bool edition = type == "checkpoint" || type == "status" || type == "pin";
++    if (edition) keys.insert("editionId");
++    if (type == "checkpoint") keys.insert("text");
++    else if (type == "status") keys.insert("status");
++    else if (type == "pin") keys.insert("pinned");
++    else if (type == "thread-create") keys.insert("name");
++    else if (type == "thread-keep") { keys.insert("suggestedId"); keys.insert("name"); keys.insert("members"); }
++    else if (type == "thread-membership") { keys.insert("threadId"); keys.insert("editionId"); keys.insert("member"); }
++    else return failure("unsupported_action");
++    for (auto it = a.constBegin(); it != a.constEnd(); ++it) if (!keys.contains(it.key())) return failure("unexpected_field");
++    if ((edition || type == "thread-membership") && !identifier(a.value("editionId"))) return failure("invalid_edition_id");
++    if (type == "checkpoint" && (a.value("text").userType() != QMetaType::QString || a.value("text").toString().size() > 4000 || a.value("text").toString().contains(QChar(0)))) return failure("invalid_checkpoint");
++    if (type == "status" && !QStringList({"unknown", "backlog", "playing", "finished", "abandoned"}).contains(a.value("status").toString())) return failure("invalid_status");
++    if (type == "pin" && a.value("pinned").userType() != QMetaType::Bool) return failure("invalid_pin");
++    if ((type == "thread-create" || type == "thread-keep") && (!identifier(a.value("name")) || a.value("name").toString().size() > 160)) return failure("invalid_thread_name");
++    if (type == "thread-keep") {
++        if (!identifier(a.value("suggestedId")) || a.value("members").userType() != QMetaType::QVariantList || a.value("members").toList().size() > 10000) return failure("invalid_thread");
++        QSet<QString> members;
++        for (const QVariant& id : a.value("members").toList()) { if (!identifier(id) || members.contains(id.toString())) return failure("invalid_member"); members.insert(id.toString()); }
++    }
++    if (type == "thread-membership" && (!identifier(a.value("threadId")) || a.value("member").userType() != QMetaType::Bool || a.value("threadId").toString().startsWith("local:"))) return failure("invalid_thread_membership");
++    // Repeat calls with the same ID retain the original inferred revision.
++    if (a.contains("actionId") && !a.contains("expectedRevision")) {
++        QSqlQuery existing(m_db); existing.prepare("SELECT body FROM actions WHERE id=?"); existing.addBindValue(a.value("actionId"));
++        if (existing.exec() && existing.next()) {
++            const QVariantMap original = object(existing.value(0).toByteArray());
++            if (original.contains("expectedRevision")) a["expectedRevision"] = original.value("expectedRevision");
++        }
++    }
++    const QVariantMap personal = read().value("personal").toMap();
++    if (!a.contains("expectedRevision") && edition) a["expectedRevision"] = personal.value("entries").toMap().value(a.value("editionId").toString()).toMap().value("revision", 0);
++    if (!a.contains("expectedRevision") && type == "thread-membership") {
++        bool found = false;
++        for (const QVariant& item : personal.value("threads").toList()) if (item.toMap().value("threadId") == a.value("threadId")) { a["expectedRevision"] = item.toMap().value("revision", 0); found = true; break; }
++        if (!found) return failure("unknown_thread");
++    }
++    if (a.contains("expectedRevision") && !revision(a.value("expectedRevision"))) return failure("invalid_revision");
++    if (!a.contains("actionId")) a["actionId"] = QUuid::createUuid().toString(QUuid::WithoutBraces);
++    if (!identifier(a.value("actionId"))) return failure("invalid_action_id");
++    const QByteArray body = json(a);
++    const QString hash = QString::fromLatin1(QCryptographicHash::hash(body, QCryptographicHash::Sha256).toHex());
++    QSqlQuery q(m_db); q.prepare("SELECT hash,state,receipt FROM actions WHERE id=?"); q.addBindValue(a.value("actionId"));
++    if (!q.exec()) return failure("database_read_failed");
++    if (q.next()) {
++        if (q.value(0).toString() != hash) return failure("action_id_reused");
++        if (q.value(1) == "pending") return {{"ok", true}, {"queued", true}, {"actionId", a.value("actionId")}};
++        return object(q.value(2).toByteArray());
++    }
++    if (!m_db.transaction()) return failure("database_transaction_failed");
++    q.prepare("INSERT INTO actions(id,hash,body,state) VALUES(?,?,?,'pending')"); q.addBindValue(a.value("actionId")); q.addBindValue(hash); q.addBindValue(body);
++    if (!q.exec() || !m_db.commit()) { m_db.rollback(); return failure("database_commit_failed"); }
++    emit changed(); emit statusChanged();
++    QTimer::singleShot(0, this, [this]() { synchronize(); });
++    return {{"ok", true}, {"queued", true}, {"actionId", a.value("actionId")}};
++}
++
++bool DeviceLibrary::acceptSnapshot(const QByteArray& bytes) {
++    if (!m_ready || bytes.size() > MaxBytes) { setState("error", "Snapshot exceeds limit or database unavailable"); return false; }
++    QJsonParseError error; QJsonDocument doc = QJsonDocument::fromJson(bytes, &error);
++    if (error.error != QJsonParseError::NoError || !doc.isObject()) { setState("error", "Invalid snapshot"); return false; }
++    int count = 0;
++    if (!boundedValue(doc.object(), 0, count)) { setState("error", "Unsafe or unbounded snapshot"); return false; }
++    const QJsonObject s = doc.object(); const QJsonObject p = s.value("personal").toObject();
++    if (s.value("version").toInt() != 1 || !s.value("revision").isString() || !s.value("editions").isArray() || s.value("editions").toArray().size() > 10000 || !s.value("personal").isObject() || !p.value("entries").isObject() || !p.value("threads").isArray() || !s.value("recommendations").isArray() || !s.value("threads").isArray() ||
++        (!m_enrollment.deviceId.isEmpty() && s.value("deviceId").toString() != m_enrollment.deviceId)) { setState("error", "Snapshot schema rejected"); return false; }
++    QSet<QString> ids;
++    for (const QJsonValue& v : s.value("editions").toArray()) {
++        if (!v.isObject() || !identifier(v.toObject().value("editionId").toVariant()) || !v.toObject().value("title").isString() || v.toObject().value("title").toString().isEmpty() || v.toObject().value("title").toString().size() > 500 || ids.contains(v.toObject().value("editionId").toString())) { setState("error", "Invalid edition"); return false; }
++        ids.insert(v.toObject().value("editionId").toString());
++    }
++    const QJsonObject entries = p.value("entries").toObject();
++    if (entries.size() > 10000) return false;
++    for (auto it = entries.begin(); it != entries.end(); ++it) {
++        const QVariantMap e = it.value().toObject().toVariantMap();
++        if (!identifier(it.key()) || !ids.contains(it.key()) || !it.value().isObject() || !e.contains("checkpoint") || !revision(e.value("revision")) || (e.contains("checkpoint") && !e.value("checkpoint").isNull() && e.value("checkpoint").userType() != QMetaType::QString) || !QStringList({"unknown", "backlog", "playing", "finished", "abandoned"}).contains(e.value("status").toString())) { setState("error", "Invalid personal entry"); return false; }
++    }
++    for (const QJsonValue& v : p.value("threads").toArray()) {
++        const QJsonObject t = v.toObject();
++        if (!v.isObject() || !identifier(t.value("threadId").toVariant()) || !identifier(t.value("name").toVariant()) || !revision(t.value("revision").toVariant()) || !t.value("members").isArray()) return false;
++        for (const QJsonValue& id : t.value("members").toArray()) if (!identifier(id.toVariant())) return false;
++    }
++    for (const QJsonValue& v : s.value("recommendations").toArray()) {
++        const QJsonObject r = v.toObject();
++        if (!v.isObject() || !identifier(r.value("editionId").toVariant()) || !r.value("score").isDouble() || !r.value("reason").isString() || !r.value("sources").isArray()) return false;
++    }
++    for (const QJsonValue& v : s.value("threads").toArray()) {
++        const QJsonObject t = v.toObject();
++        if (!v.isObject() || !identifier(t.value("suggestedId").toVariant()) || !identifier(t.value("name").toVariant()) || !t.value("members").isArray() || !t.value("source").isString() || !t.value("reason").isString()) return false;
++        for (const QJsonValue& id : t.value("members").toArray()) if (!identifier(id.toVariant())) return false;
++    }
++    // Never interpret remote strings as paths, credentials, launch routes or commands.
++    if (!m_db.transaction()) return false;
++    QSqlQuery q(m_db); q.prepare("INSERT OR REPLACE INTO snapshot(id,body) VALUES(1,?)"); q.addBindValue(bytes);
++    if (!q.exec() || !q.exec("UPDATE actions SET state='folded' WHERE state='ack'") || !m_db.commit()) { m_db.rollback(); setState("error", "Snapshot commit failed"); return false; }
++    emit changed(); return true;
++}
++
++bool DeviceLibrary::acceptReceipt(const QString& id, const QByteArray& bytes) {
++    if (bytes.size() > MaxBytes) return false;
++    QJsonParseError error; QJsonDocument doc = QJsonDocument::fromJson(bytes, &error);
++    if (error.error != QJsonParseError::NoError || !doc.isObject()) return false;
++    QVariantMap receipt = doc.object().toVariantMap();
++    if (receipt.value("actionId") != id || receipt.value("ok").userType() != QMetaType::Bool || receipt.value("queued").userType() != QMetaType::Bool || receipt.value("queued").toBool()) return false;
++    const bool ok = receipt.value("ok").toBool();
++    if (!ok && (receipt.value("error") != "revision_conflict" || !receipt.value("conflict").canConvert<QVariantMap>())) return false;
++    QSqlQuery q(m_db); q.prepare("SELECT state,receipt,body FROM actions WHERE id=?"); q.addBindValue(id);
++    if (!q.exec() || !q.next()) return false;
++    if (q.value(0) != "pending") return object(q.value(1).toByteArray()) == receipt;
++    const QVariantMap original = object(q.value(2).toByteArray());
++    if (ok && !revision(receipt.value("revision"))) return false;
++    if (ok && (original.value("type") == "thread-create" || original.value("type") == "thread-keep") && !identifier(receipt.value("threadId"))) return false;
++    if (!ok) {
++        const QVariantMap conflict = receipt.value("conflict").toMap();
++        if (conflict.value("current").userType() != QMetaType::QVariantMap || conflict.value("submitted").toMap() != original) return false;
++    }
++    if (!m_db.transaction()) return false;
++    q.prepare("UPDATE actions SET state=?,receipt=? WHERE id=? AND state='pending'"); q.addBindValue(ok ? "ack" : "conflict"); q.addBindValue(bytes); q.addBindValue(id);
++    if (!q.exec() || !m_db.commit()) { m_db.rollback(); return false; }
++    emit changed(); emit statusChanged(); return true;
++}
++QByteArray DeviceLibrary::nextAction() const {
++    QSet<QString> blocked;
++    QSqlQuery q(m_db);
++    if (q.exec("SELECT body,state FROM actions WHERE state IN ('pending','conflict') ORDER BY seq")) while (q.next()) {
++        const QByteArray body = q.value(0).toByteArray(); const QString key = scope(object(body));
++        if (q.value(1) == "conflict") blocked.insert(key);
++        else if (!blocked.contains(key)) return body;
++    }
++    return {};
++}
++bool DeviceLibrary::allowedEndpoint(const Enrollment& e) {
++    const QUrl u = e.endpoint;
++    if (!u.isValid() || u.host().isEmpty() || !u.userInfo().isEmpty() || !u.query().isEmpty() || !u.fragment().isEmpty()) return false;
++    if (u.scheme() == "https") return true;
++    if (u.scheme() != "http" || e.transport != "tailnet") return false;
++    QStringList parts = u.host().split('.');
++    if (parts.size() == 4) {
++        bool ok[4]; int v[4]; for (int i = 0; i < 4; ++i) v[i] = parts[i].toInt(&ok[i]);
++        return ok[0] && ok[1] && ok[2] && ok[3] && v[0] == 100 && v[1] >= 64 && v[1] <= 127 && v[2] >= 0 && v[2] <= 255 && v[3] >= 0 && v[3] <= 255;
++    }
++    const QHostAddress host(u.host());
++    return host.protocol() == QAbstractSocket::IPv6Protocol && host.isInSubnet(QHostAddress("fd7a:115c:a1e0::"), 48);
++}
++void DeviceLibrary::synchronize() {
++    if (m_busy || !m_ready) return;
++    if (!allowedEndpoint(m_enrollment) || m_enrollment.token.isEmpty()) { setState("unavailable", "Device credentials unavailable"); return; }
++    m_busy = true; setState("syncing", "Synchronizing library"); sendNext();
++}
++void DeviceLibrary::sendNext() {
++    const QByteArray body = nextAction();
++    if (body.isEmpty()) { fetchSnapshot(); return; }
++    QUrl url = m_enrollment.endpoint; QString path = url.path(); if (path.endsWith('/')) path.chop(1); url.setPath(path + "/api/v1/game-library/actions");
++    QNetworkRequest req(url); req.setRawHeader("Authorization", "Bearer " + m_enrollment.token); req.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
++    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
++    QNetworkReply* reply = m_network->post(req, body); reply->setReadBufferSize(MaxBytes + 1);
++    QTimer* deadline = new QTimer(reply); deadline->setSingleShot(true); connect(deadline, &QTimer::timeout, reply, &QNetworkReply::abort); deadline->start(20000);
++    auto bytes = QSharedPointer<QByteArray>::create();
++    connect(reply, &QIODevice::readyRead, this, [reply, bytes]() { bytes->append(reply->readAll()); if (bytes->size() > MaxBytes) reply->abort(); });
++    connect(reply, &QNetworkReply::finished, this, [this, reply, bytes, body]() {
++        bytes->append(reply->readAll()); int code = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
++        bool accepted = (code == 200 || code == 409) && acceptReceipt(object(body).value("actionId").toString(), *bytes);
++        reply->deleteLater();
++        if (accepted) sendNext(); else { m_busy = false; setState("offline", "Action pending; retry on next synchronization"); }
++    });
++}
++void DeviceLibrary::fetchSnapshot() {
++    QUrl url = m_enrollment.endpoint; QString path = url.path(); if (path.endsWith('/')) path.chop(1); url.setPath(path + "/api/v1/game-library/snapshot");
++    QNetworkRequest req(url); req.setRawHeader("Authorization", "Bearer " + m_enrollment.token); req.setAttribute(QNetworkRequest::RedirectPolicyAttribute, QNetworkRequest::ManualRedirectPolicy);
++    // Full response also folds acknowledged overlays. Avoid 304 while any ack awaits folding.
++    QNetworkReply* reply = m_network->get(req); reply->setReadBufferSize(MaxBytes + 1);
++    QTimer* deadline = new QTimer(reply); deadline->setSingleShot(true); connect(deadline, &QTimer::timeout, reply, &QNetworkReply::abort); deadline->start(20000);
++    auto bytes = QSharedPointer<QByteArray>::create();
++    connect(reply, &QIODevice::readyRead, this, [reply, bytes]() { bytes->append(reply->readAll()); if (bytes->size() > MaxBytes) reply->abort(); });
++    connect(reply, &QNetworkReply::finished, this, [this, reply, bytes]() {
++        bytes->append(reply->readAll()); bool ok = reply->error() == QNetworkReply::NoError && reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt() == 200 && acceptSnapshot(*bytes);
++        reply->deleteLater(); m_busy = false;
++        setState(ok ? "acknowledged" : "offline", ok ? "Library synchronized" : "Snapshot unavailable; local library retained");
++    });
++}
++} // namespace library
+diff --git a/src/backend/library/DeviceLibrary.h b/src/backend/library/DeviceLibrary.h
+new file mode 100644
+index 0000000..2903750
+--- /dev/null
++++ b/src/backend/library/DeviceLibrary.h
+@@ -0,0 +1,62 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#pragma once
++
++#include <QObject>
++#include <QVariantMap>
++#include <QSqlDatabase>
++#include <QUrl>
++
++class QNetworkAccessManager;
++
++namespace library {
++
++// Credentials are never exposed through the QObject API or stored in SQLite.
++struct Enrollment {
++    QUrl endpoint;
++    QString deviceId;
++    QString transport;
++    QString bootstrapPath;
++    QByteArray token;
++};
++Enrollment platformEnrollment();
++QString platformStoragePath();
++// Small platform seams used by Linux startup and isolated filesystem tests.
++QString linuxStoragePath(const QString& overridePath, const QString& fallbackPath);
++bool enrollmentDeviceMatches(const QString& enrolledDeviceId, const QString& launcherDeviceId);
++
++class DeviceLibrary : public QObject {
++    Q_OBJECT
++public:
++    explicit DeviceLibrary(QObject* parent = nullptr);
++    DeviceLibrary(const QString& databasePath, const Enrollment& enrollment,
++                  QNetworkAccessManager* network = nullptr, QObject* parent = nullptr);
++    ~DeviceLibrary() override;
++    Q_INVOKABLE QVariantMap read(const QVariantMap& query = QVariantMap()) const;
++    Q_INVOKABLE QVariantMap act(const QVariantMap& action);
++    Q_INVOKABLE void synchronize();
++
++    // Complete bounded validation happens before beginning the replacement transaction.
++    // Also used by the local bootstrap loader and offline behavior harness.
++    bool acceptSnapshot(const QByteArray& bytes);
++    bool acceptReceipt(const QString& actionId, const QByteArray& bytes);
++    QByteArray nextAction() const;
++    static bool allowedEndpoint(const Enrollment& enrollment);
++signals:
++    void changed();
++    void statusChanged();
++private:
++    bool initialize(const QString& databasePath);
++    QVariantMap snapshot() const;
++    void setState(const QString& state, const QString& message);
++    void sendNext();
++    void fetchSnapshot();
++    QSqlDatabase m_db;
++    QString m_connection;
++    Enrollment m_enrollment;
++    QNetworkAccessManager* m_network;
++    bool m_busy = false;
++    bool m_ready = false;
++    QString m_state;
++    QString m_message;
++};
++} // namespace library
+diff --git a/src/backend/library/PlatformEnrollment.cpp b/src/backend/library/PlatformEnrollment.cpp
+new file mode 100644
+index 0000000..6e9a53f
+--- /dev/null
++++ b/src/backend/library/PlatformEnrollment.cpp
+@@ -0,0 +1,94 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "DeviceLibrary.h"
++#include <QDir>
++#include <QFile>
++#include <QFileInfo>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QProcess>
++#include <QStandardPaths>
++#ifdef Q_OS_UNIX
++#include <unistd.h>
++#endif
++#ifdef Q_OS_ANDROID
++#include <QAndroidJniObject>
++#include <QAndroidJniEnvironment>
++#endif
++namespace library {
++QString linuxStoragePath(const QString& overridePath, const QString& fallbackPath) {
++    const QString path = overridePath.isEmpty() ? fallbackPath : overridePath;
++    if (path.isEmpty() || !QDir::isAbsolutePath(path) || QDir::cleanPath(path) == "/" ||
++        path.split('/').contains("..")) return {};
++    const QString cleaned = QDir::cleanPath(path);
++    QFileInfo info(cleaned);
++    // Reject final-component symlinks and files. Parent links such as /home on
++    // Bazzite are allowed; return the resolved private directory consistently.
++    if (info.isSymLink() || (info.exists() && !info.isDir())) return {};
++    if (!info.exists() && !QDir().mkpath(cleaned)) return {};
++    info.refresh();
++    if (!info.isDir() || info.isSymLink()) return {};
++#ifdef Q_OS_UNIX
++    if (info.ownerId() != uint(getuid())) return {};
++#endif
++    const QFileDevice::Permissions permissions = QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner;
++    if (!QFile::setPermissions(cleaned, permissions)) return {};
++    info.refresh();
++    const QFileDevice::Permissions unsafe = QFileDevice::ReadGroup | QFileDevice::WriteGroup | QFileDevice::ExeGroup |
++        QFileDevice::ReadOther | QFileDevice::WriteOther | QFileDevice::ExeOther;
++    if ((info.permissions() & unsafe) != 0) return {};
++    return info.canonicalFilePath();
++}
++bool enrollmentDeviceMatches(const QString& enrolledDeviceId, const QString& launcherDeviceId) {
++    if (launcherDeviceId.isEmpty()) return true;
++    if (launcherDeviceId.size() > 200 || enrolledDeviceId != launcherDeviceId) return false;
++    for (const QChar c : launcherDeviceId) if (c.unicode() < 32) return false;
++    return true;
++}
++QString platformStoragePath() {
++#ifdef Q_OS_ANDROID
++    QAndroidJniObject path = QAndroidJniObject::callStaticObjectMethod("org/pegasus_frontend/android/DeviceLibraryVault", "storagePath", "()Ljava/lang/String;");
++    QAndroidJniEnvironment env;
++    if (env->ExceptionCheck()) { env->ExceptionClear(); return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/device-library"; }
++    return path.toString();
++#elif defined(Q_OS_LINUX)
++    return linuxStoragePath(qEnvironmentVariable("DEVICE_LIBRARY_DIR"),
++        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/device-library");
++#else
++    return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/device-library";
++#endif
++}
++Enrollment platformEnrollment() {
++    QByteArray bytes;
++#ifdef Q_OS_ANDROID
++    QAndroidJniObject payload = QAndroidJniObject::callStaticObjectMethod("org/pegasus_frontend/android/DeviceLibraryVault", "enrollment", "()Ljava/lang/String;");
++    QAndroidJniEnvironment env;
++    if (env->ExceptionCheck()) env->ExceptionClear();
++    else bytes = payload.toString().toUtf8();
++#else
++    const QString storage = platformStoragePath();
++    if (storage.isEmpty()) return {};
++    QFile config(storage + "/config.json");
++    if (config.open(QIODevice::ReadOnly) && config.size() <= 16384) bytes = config.readAll();
++#endif
++    QJsonObject o = QJsonDocument::fromJson(bytes).object();
++    Enrollment e; e.endpoint = QUrl(o.value("endpoint").toString()); e.deviceId = o.value("deviceId").toString(); e.transport = o.value("transport").toString(); e.bootstrapPath = o.value("bootstrapPath").toString();
++#ifdef Q_OS_ANDROID
++    e.token = o.value("token").toString().toUtf8();
++#else
++#ifdef Q_OS_LINUX
++    if (!enrollmentDeviceMatches(e.deviceId, qEnvironmentVariable("DEVICE_LIBRARY_DEVICE_ID"))) return {};
++#endif
++    if (DeviceLibrary::allowedEndpoint(e) && !e.deviceId.isEmpty()) {
++        // Secret Service owns the token. Config files and SQLite never contain it.
++        const QString executable = QStandardPaths::findExecutable("secret-tool");
++        if (!executable.isEmpty()) {
++            QProcess lookup; lookup.setProgram(executable); lookup.setArguments({"lookup", "application", "info.maxwellyoung.library", "deviceId", e.deviceId, "endpoint", e.endpoint.toString()}); lookup.start();
++            if (lookup.waitForFinished(1500) && lookup.exitCode() == 0) e.token = lookup.readAllStandardOutput().trimmed();
++            else { lookup.kill(); lookup.waitForFinished(100); }
++        }
++    }
++#endif
++    if (!DeviceLibrary::allowedEndpoint(e) || e.token.size() > 8192 || e.token.contains('\n') || e.token.contains('\r')) e.token.clear();
++    return e;
++}
++} // namespace library
+diff --git a/src/backend/library/README.md b/src/backend/library/README.md
+new file mode 100644
+index 0000000..3025d13
+--- /dev/null
++++ b/src/backend/library/README.md
+@@ -0,0 +1,21 @@
++# Device Library bridge
++
++This Nova modification adds a FrontendLayer-owned QObject exposed as `deviceLibrary` to QML. Local actions and the last complete snapshot are stored in SQLite. Pending actions survive restart and are retained on conflicts. Launch commands remain outside this bridge.
++
++Sync is optional. Without enrollment the local catalogue and theme remain usable; remote synchronization is unavailable. The server implementation and personal data are not part of this source distribution.
++
++Enrollment uses an HTTPS base URL, a device ID and a device-scoped capability. Android loads app-private enrollment and encrypts it with Android Keystore. Linux obtains capabilities through Secret Service rather than a plaintext token file. `DEVICE_LIBRARY_DIR` optionally selects a private absolute directory on Linux; `DEVICE_LIBRARY_DEVICE_ID` checks enrollment identity. No sample credentials or device-specific setup files are supplied.
++
++Snapshots reject executable and credential fields, foreign device identity, incomplete v1 data and oversized payloads. Unknown duration and progress remain unknown. Server availability is last-known evidence, not proof that a local file or launch route works. Redirects are not followed. Plain HTTP is restricted to explicitly configured shared-address-space transport; use HTTPS for portable deployments.
++
++Build the synthetic offline harness outside the source tree with a compatible Qt development installation:
++
++```sh
++mkdir device-library-test-build
++cd device-library-test-build
++qmake ../src/backend/library/tests.pro
++make -j2
++./device-library-tests
++```
++
++On macOS, qmake may create an app bundle whose binary is `device-library-tests.app/Contents/MacOS/device-library-tests`. The harness covers durable offline actions, idempotency, conflicts, revision predictions, malformed snapshot preservation, endpoint policy and enrollment checks. See the Nova repository validation notes for the proof layer actually exercised.
+diff --git a/src/backend/library/fixtures/canon-v1.json b/src/backend/library/fixtures/canon-v1.json
+new file mode 100644
+index 0000000..90896ac
+--- /dev/null
++++ b/src/backend/library/fixtures/canon-v1.json
+@@ -0,0 +1,233 @@
++{
++  "version": 1,
++  "deviceId": "test",
++  "editions": [
++    {
++      "editionId": "nova:snes:abc",
++      "workId": "unlinked:nova:snes:abc",
++      "canonId": null,
++      "title": "Fixture Console Game",
++      "platform": "SNES",
++      "artwork": null,
++      "creator": null,
++      "year": null,
++      "genres": [],
++      "tags": [],
++      "provenance": {
++        "identity": "fixture:explicit",
++        "canonSource": null,
++        "canonSourceId": null,
++        "metadataUpdatedAt": null
++      },
++      "activity": {
++        "lastPlayed": null,
++        "minutes": null,
++        "source": null,
++        "kind": "unavailable",
++        "additiveWithSessions": false
++      },
++      "legacyProgressEvidence": null,
++      "availability": [
++        {
++          "deviceId": "test",
++          "scopeId": "fixture:roms",
++          "copyId": "opaque:1",
++          "state": "ready",
++          "observedAt": "2026-10-01T00:00:00Z",
++          "receivedAt": 1000,
++          "coverage": "complete",
++          "lastKnown": true,
++          "evidence": null
++        }
++      ],
++      "progress": {
++        "checkpoint": null,
++        "status": "unknown",
++        "revision": 0,
++        "pinned": false,
++        "source": null,
++        "conflicts": []
++      },
++      "threadIds": [
++        "thread:d8c96ca5108418d1d564a04a"
++      ],
++      "deviceFit": null
++    },
++    {
++      "editionId": "steam:10",
++      "workId": "unlinked:steam:10",
++      "canonId": null,
++      "title": "Fixture Adventure",
++      "platform": "PC",
++      "artwork": null,
++      "creator": null,
++      "year": null,
++      "genres": [],
++      "tags": [],
++      "provenance": {
++        "identity": "fixture:explicit",
++        "canonSource": null,
++        "canonSourceId": null,
++        "metadataUpdatedAt": null
++      },
++      "activity": {
++        "lastPlayed": null,
++        "minutes": null,
++        "source": null,
++        "kind": "unavailable",
++        "additiveWithSessions": false
++      },
++      "legacyProgressEvidence": null,
++      "availability": [],
++      "progress": {
++        "checkpoint": "At the tower",
++        "status": "unknown",
++        "revision": 1,
++        "pinned": false,
++        "source": "library:manual",
++        "conflicts": [
++          {
++            "actionId": "fixture-conflict",
++            "deviceId": "test",
++            "submitted": {
++              "actionId": "fixture-conflict",
++              "type": "checkpoint",
++              "editionId": "steam:10",
++              "text": "At the gate",
++              "expectedRevision": 0
++            },
++            "current": {
++              "edition_id": "steam:10",
++              "checkpoint": "At the tower",
++              "status": null,
++              "pinned": 0,
++              "revision": 1
++            }
++          }
++        ]
++      },
++      "threadIds": [
++        "thread:d8c96ca5108418d1d564a04a"
++      ],
++      "deviceFit": null
++    }
++  ],
++  "personal": {
++    "entries": {
++      "nova:snes:abc": {
++        "checkpoint": null,
++        "status": "unknown",
++        "revision": 0,
++        "pinned": false,
++        "source": null,
++        "conflicts": [],
++        "pending": false,
++        "conflict": null
++      },
++      "steam:10": {
++        "checkpoint": "At the tower",
++        "status": "unknown",
++        "revision": 1,
++        "pinned": false,
++        "source": "library:manual",
++        "conflicts": [
++          {
++            "actionId": "fixture-conflict",
++            "deviceId": "test",
++            "submitted": {
++              "actionId": "fixture-conflict",
++              "type": "checkpoint",
++              "editionId": "steam:10",
++              "text": "At the gate",
++              "expectedRevision": 0
++            },
++            "current": {
++              "edition_id": "steam:10",
++              "checkpoint": "At the tower",
++              "status": null,
++              "pinned": 0,
++              "revision": 1
++            }
++          }
++        ],
++        "pending": false,
++        "conflict": [
++          {
++            "actionId": "fixture-conflict",
++            "deviceId": "test",
++            "submitted": {
++              "actionId": "fixture-conflict",
++              "type": "checkpoint",
++              "editionId": "steam:10",
++              "text": "At the gate",
++              "expectedRevision": 0
++            },
++            "current": {
++              "edition_id": "steam:10",
++              "checkpoint": "At the tower",
++              "status": null,
++              "pinned": 0,
++              "revision": 1
++            }
++          }
++        ]
++      }
++    },
++    "threads": [
++      {
++        "threadId": "thread:d8c96ca5108418d1d564a04a",
++        "name": "Evening games",
++        "source": "kept-suggestion",
++        "suggestedId": "fixture:suggestion",
++        "revision": 1,
++        "members": [
++          "nova:snes:abc",
++          "steam:10"
++        ],
++        "conflicts": []
++      }
++    ]
++  },
++  "recommendations": [
++    {
++      "editionId": "nova:snes:abc",
++      "score": 30,
++      "reason": "Last observed ready on this device",
++      "sources": [
++        {
++          "kind": "inventory-last-known",
++          "deviceId": "test"
++        }
++      ]
++    },
++    {
++      "editionId": "steam:10",
++      "score": 0,
++      "reason": "From your linked library; no preference or readiness evidence yet",
++      "sources": [
++        {
++          "kind": "catalogue",
++          "identity": "fixture:explicit"
++        }
++      ]
++    }
++  ],
++  "threads": [],
++  "inventoryScopes": [
++    {
++      "deviceId": "test",
++      "scopeId": "fixture:roms",
++      "sequence": 1,
++      "coverage": "complete",
++      "observedAt": "2026-10-01T00:00:00Z",
++      "receivedAt": 1000,
++      "lastKnown": true
++    }
++  ],
++  "sync": {
++    "state": "acknowledged",
++    "message": "Private Canon snapshot",
++    "pending": 0
++  },
++  "revision": "6a49b23832bc022d1bfd26f8fd10ff30a14306ed8f34a9f1493e67e5e69c9605"
++}
+\ No newline at end of file
+diff --git a/src/backend/library/tests.pro b/src/backend/library/tests.pro
+new file mode 100644
+index 0000000..4078678
+--- /dev/null
++++ b/src/backend/library/tests.pro
+@@ -0,0 +1,7 @@
++TEMPLATE = app
++TARGET = device-library-tests
++QT += core network sql testlib
++QT -= gui
++CONFIG += console testcase c++11
++SOURCES += DeviceLibrary.cpp PlatformEnrollment.cpp tst_DeviceLibrary.cpp
++HEADERS += DeviceLibrary.h
+diff --git a/src/backend/library/tst_DeviceLibrary.cpp b/src/backend/library/tst_DeviceLibrary.cpp
+new file mode 100644
+index 0000000..8815448
+--- /dev/null
++++ b/src/backend/library/tst_DeviceLibrary.cpp
+@@ -0,0 +1,100 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++#include "DeviceLibrary.h"
++#include <QtTest>
++#include <QTemporaryDir>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QFile>
++using namespace library;
++class DeviceLibraryTest : public QObject {
++    Q_OBJECT
++    QByteArray seed(const QString& text = "before", int rev = 0) {
++        return QJsonDocument::fromVariant(QVariantMap{{"version",1},{"revision","snapshot"},{"deviceId","test"},{"editions",QVariantList{QVariantMap{{"editionId","game"},{"title","Game"}}}},{"personal",QVariantMap{{"entries",QVariantMap{{"game",QVariantMap{{"checkpoint",text},{"status","unknown"},{"revision",rev}}}}},{"threads",QVariantList()}}},{"recommendations",QVariantList()},{"threads",QVariantList()}}).toJson();
++    }
++    QVariantMap entry(DeviceLibrary& lib) { return lib.read().value("personal").toMap().value("entries").toMap().value("game").toMap(); }
++    Enrollment enrollment() { Enrollment e; e.deviceId = "test"; return e; }
++    QByteArray ack(const QString& id, int rev=1) { return QJsonDocument::fromVariant(QVariantMap{{"ok",true},{"queued",false},{"actionId",id},{"receivedAt",1},{"revision",rev}}).toJson(); }
++private slots:
++    void offlineRestart() {
++        QTemporaryDir dir; const QString path=dir.path()+"/db.sqlite";
++        QByteArray action;
++        { DeviceLibrary lib(path,enrollment()); QVERIFY(lib.acceptSnapshot(seed())); auto r=lib.act({{"type","checkpoint"},{"editionId","game"},{"text","saved offline"}}); QVERIFY(r.value("queued").toBool()); action=lib.nextAction(); QCOMPARE(entry(lib).value("checkpoint").toString(),QString("saved offline")); }
++        DeviceLibrary lib(path,enrollment()); QCOMPARE(lib.nextAction(),action); QVERIFY(entry(lib).value("pending").toBool()); QCOMPARE(entry(lib).value("checkpoint").toString(),QString("saved offline"));
++    }
++    void lostAckAndDuplicate() {
++        DeviceLibrary lib(":memory:",enrollment()); QVERIFY(lib.acceptSnapshot(seed()));
++        const auto r=lib.act({{"type","checkpoint"},{"editionId","game"},{"text","new"},{"actionId","same"}});
++        const QByteArray queued=lib.nextAction(); QCOMPARE(lib.nextAction(),queued); QVERIFY(lib.act({{"type","checkpoint"},{"editionId","game"},{"text","new"},{"actionId","same"}}).value("ok").toBool()); QCOMPARE(lib.nextAction(),queued); QVERIFY(lib.acceptReceipt("same",ack("same"))); QVERIFY(lib.acceptReceipt("same",ack("same"))); QVERIFY(lib.nextAction().isEmpty()); QCOMPARE(entry(lib).value("checkpoint").toString(),QString("new"));
++        QVERIFY(lib.acceptSnapshot(seed("new",1))); QCOMPARE(entry(lib).value("revision").toInt(),1);
++        QCOMPARE(lib.act({{"type","checkpoint"},{"editionId","game"},{"text","different"},{"actionId","same"},{"expectedRevision",0}}).value("error").toString(),QString("action_id_reused"));
++    }
++    void conflictRetainedAndDependentBlocked() {
++        QTemporaryDir dir; QString path=dir.path()+"/db.sqlite";
++        { DeviceLibrary lib(path,enrollment()); QVERIFY(lib.acceptSnapshot(seed())); QVERIFY(lib.act({{"type","checkpoint"},{"editionId","game"},{"text","mine"},{"actionId","first"}}).value("ok").toBool()); QVERIFY(lib.act({{"type","status"},{"editionId","game"},{"status","playing"},{"actionId","second"}}).value("ok").toBool());
++        QByteArray conflict=QJsonDocument::fromVariant(QVariantMap{{"ok",false},{"queued",false},{"actionId","first"},{"error","revision_conflict"},{"conflict",QVariantMap{{"current",QVariantMap{{"checkpoint","theirs"},{"revision",1}}},{"submitted",QJsonDocument::fromJson(lib.nextAction()).object().toVariantMap()}}}}).toJson();
++        QVERIFY(lib.acceptReceipt("first",conflict)); QVERIFY(lib.nextAction().isEmpty()); QVERIFY(lib.acceptSnapshot(seed("theirs",1))); QCOMPARE(entry(lib).value("checkpoint").toString(),QString("mine")); QVERIFY(!entry(lib).value("conflict").toMap().isEmpty()); }
++        DeviceLibrary lib(path,enrollment()); QVERIFY(!entry(lib).value("conflict").toMap().isEmpty()); QVERIFY(lib.nextAction().isEmpty()); QCOMPARE(lib.read().value("sync").toMap().value("pending").toInt(),1);
++    }
++    void invalidSnapshotsPreservePending() {
++        DeviceLibrary lib(":memory:",enrollment()); QVERIFY(lib.acceptSnapshot(seed())); QVERIFY(lib.act({{"type","checkpoint"},{"editionId","game"},{"text","pending"}}).value("ok").toBool()); QByteArray before=lib.nextAction();
++        QVERIFY(!lib.acceptSnapshot("{broken")); QVERIFY(!lib.acceptSnapshot(QByteArray(5*1024*1024+1,' '))); QVERIFY(!lib.acceptSnapshot("{\"version\":1}")); QCOMPARE(lib.nextAction(),before); QCOMPARE(entry(lib).value("checkpoint").toString(),QString("pending")); QCOMPARE(lib.read().value("editions").toList().size(),1);
++    }
++    void revisionPredictionAndNoLaunch() {
++        DeviceLibrary lib(":memory:",enrollment()); QVERIFY(lib.acceptSnapshot(seed())); QVERIFY(lib.act({{"type","checkpoint"},{"editionId","game"},{"text","1"}}).value("ok").toBool()); QVERIFY(lib.act({{"type","status"},{"editionId","game"},{"status","playing"}}).value("ok").toBool()); QCOMPARE(entry(lib).value("revision").toInt(),2); QVERIFY(!lib.act({{"type","launch"},{"editionId","game"}}).value("ok").toBool());
++    }
++    void canonSnapshotConformance() {
++        DeviceLibrary lib(":memory:",enrollment());
++        QFile fixture(QFINDTESTDATA("fixtures/canon-v1.json")); QVERIFY(fixture.open(QIODevice::ReadOnly)); QVERIFY(lib.acceptSnapshot(fixture.readAll()));
++        QCOMPARE(lib.read().value("editions").toList().size(),2);
++        QVERIFY(lib.read().value("personal").toMap().value("entries").toMap().value("nova:snes:abc").toMap().value("checkpoint").isNull());
++        QCOMPARE(lib.read().value("sync").toMap().value("state").toString(),QString("conflict"));
++        QCOMPARE(lib.read().value("personal").toMap().value("threads").toList().size(),1);
++    }
++    void rejectExecutableSnapshotAndWrongDevice() {
++        DeviceLibrary lib(":memory:",enrollment()); QVERIFY(lib.acceptSnapshot(seed()));
++        QJsonObject bad=QJsonDocument::fromJson(seed()).object(); bad["command"]="remote-executable"; QVERIFY(!lib.acceptSnapshot(QJsonDocument(bad).toJson()));
++        bad=QJsonDocument::fromJson(seed()).object(); bad["deviceId"]="another-device"; QVERIFY(!lib.acceptSnapshot(QJsonDocument(bad).toJson()));
++        QCOMPARE(lib.read().value("editions").toList().size(),1);
++    }
++    void threadActionsAndPin() {
++        DeviceLibrary lib(":memory:",enrollment()); QVERIFY(lib.acceptSnapshot(seed()));
++        QVERIFY(lib.act({{"type","thread-keep"},{"suggestedId","group"},{"name","Keep"},{"members",QVariantList{"game"}},{"actionId","keep"}}).value("queued").toBool());
++        QCOMPARE(lib.read().value("personal").toMap().value("threads").toList().size(),1);
++        QByteArray receipt=QJsonDocument::fromVariant(QVariantMap{{"ok",true},{"queued",false},{"actionId","keep"},{"revision",1},{"threadId","thread:kept"}}).toJson(); QVERIFY(lib.acceptReceipt("keep",receipt));
++        QVERIFY(lib.act({{"type","thread-membership"},{"threadId","thread:kept"},{"editionId","game"},{"member",false}}).value("queued").toBool());
++        auto thread=lib.read().value("personal").toMap().value("threads").toList().first().toMap(); QVERIFY(thread.value("members").toList().isEmpty()); QCOMPARE(thread.value("revision").toInt(),2);
++        QVERIFY(lib.act({{"type","pin"},{"editionId","game"},{"pinned",true}}).value("queued").toBool()); QVERIFY(entry(lib).value("pinned").toBool());
++    }
++    void endpointPolicy() {
++        Enrollment e; e.endpoint=QUrl("http://127.0.0.1:3000"); e.transport="tailnet"; QVERIFY(!DeviceLibrary::allowedEndpoint(e)); e.endpoint=QUrl("http://100.100.1.1:3000"); QVERIFY(DeviceLibrary::allowedEndpoint(e)); e.transport.clear(); QVERIFY(!DeviceLibrary::allowedEndpoint(e)); e.endpoint=QUrl("https://example.test"); QVERIFY(DeviceLibrary::allowedEndpoint(e)); e.endpoint=QUrl("https://user:pass@example.test"); QVERIFY(!DeviceLibrary::allowedEndpoint(e));
++    }
++    void privateLinuxStoragePath() {
++        QTemporaryDir dir; QVERIFY(dir.isValid());
++        const QString fallback = dir.path() + "/default";
++        const QString personal = dir.path() + "/personal";
++        QCOMPARE(linuxStoragePath(QString(), fallback), QFileInfo(fallback).canonicalFilePath());
++        QCOMPARE(linuxStoragePath(personal, fallback), QFileInfo(personal).canonicalFilePath());
++        QVERIFY(QFile::setPermissions(personal, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner | QFileDevice::ReadGroup));
++        QCOMPARE(linuxStoragePath(personal, fallback), QFileInfo(personal).canonicalFilePath());
++        QVERIFY(!(QFileInfo(personal).permissions() & (QFileDevice::ReadGroup | QFileDevice::ReadOther)));
++        QVERIFY(linuxStoragePath("relative", fallback).isEmpty());
++        QVERIFY(linuxStoragePath("/", fallback).isEmpty());
++        QVERIFY(linuxStoragePath(dir.path() + "/../escape", fallback).isEmpty());
++        QFile file(dir.path() + "/file"); QVERIFY(file.open(QIODevice::WriteOnly)); file.close();
++        QVERIFY(linuxStoragePath(file.fileName(), fallback).isEmpty());
++        const QString link = dir.path() + "/link";
++        QVERIFY(QFile::link(personal, link)); QVERIFY(linuxStoragePath(link, fallback).isEmpty());
++    }
++    void launcherEnrollmentIdentity() {
++        QVERIFY(enrollmentDeviceMatches("legion-go", "legion-go"));
++        QVERIFY(enrollmentDeviceMatches("legion-go", QString()));
++        QVERIFY(!enrollmentDeviceMatches("nova", "legion-go"));
++        QVERIFY(!enrollmentDeviceMatches(QString(), "legion-go"));
++        QVERIFY(!enrollmentDeviceMatches("bad\n", "bad\n"));
++        DeviceLibrary unavailable{QString(), Enrollment()};
++        QVERIFY(!unavailable.act({{"type","pin"},{"editionId","game"},{"pinned",true}}).value("ok").toBool());
++        QCOMPARE(unavailable.read().value("sync").toMap().value("state").toString(), QString("unavailable"));
++    }
++};
++QTEST_GUILESS_MAIN(DeviceLibraryTest)
++#include "tst_DeviceLibrary.moc"
+diff --git a/src/backend/model/internal/ScannerState.cpp b/src/backend/model/internal/ScannerState.cpp
+index ef638dc..938e515 100644
+--- a/src/backend/model/internal/ScannerState.cpp
++++ b/src/backend/model/internal/ScannerState.cpp
+@@ -40,7 +40,9 @@ void ScannerState::onScanStarted()
+ 
+ void ScannerState::onScanProgressChanged(float value, QString stage)
+ {
+-    Q_ASSERT(value <= 1.f);
++    // Provider averages can exceed one by a floating-point rounding unit.
++    // Keep display progress bounded across cold scans and rescans.
++    value = qBound(0.f, value, 1.f);
+ 
+     if (value > m_progress) {
+         m_progress = value;
