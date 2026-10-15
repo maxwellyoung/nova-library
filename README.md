@@ -1,6 +1,6 @@
 # Nova
 
-A quiet, controller-first library for a handheld: a Home shelf, a searchable index, consoles, and collections. Covers keep their shape. Missing artwork gets a title. A game becomes playable only when its catalogue marks a local route and the runtime still sees its file. Unknown progress stays unknown.
+A quiet, controller-first library for a handheld: a recent-games Home shelf, a searchable index, consoles, collections, and Settings. Covers keep their shape. Missing artwork gets a title. Play is enabled only when the catalogue marks a local route and the runtime sees its referenced file. Launch availability is separate from gameplay compatibility. Unknown progress stays unknown.
 
 Nova is a custom QML frontend **built on Pegasus Frontend**. The engine, game discovery, controller integration, launching, and much of the native application come from [Pegasus Frontend](https://github.com/mmatyas/pegasus-frontend). This repository contains the original Nova interface and a complete source patch for its optional native personal-library bridge; it is not a new native engine.
 
@@ -17,13 +17,15 @@ qml demo/Demo.qml
 
 Use arrow keys to move, Enter to select, Escape to return, X for details, Y to favourite a game, and Page Up/Page Down to change screens. Home/End jump within a list. The demo generator is deterministic and refuses to overwrite an existing output directory. A Pegasus metadata catalogue is also generated for testing inside Pegasus itself; all demo entries are non-launchable.
 
+The interface also includes an Apps index, explicit multi-disc selection, and an Open DroidDeck action for Steam editions without a configured local game route. That action opens the app so you can find/install the game there; it does not start a download. Gameplay evidence and screen fit are shown separately from launch availability.
+
 See [validation](docs/VALIDATION.md) for which steps were exercised. A passing helper test or generated demo is not proof of the GUI running on a device.
 
 ## Use the theme in Pegasus
 
 Copy the `theme/` directory to a new theme directory in your Pegasus configuration, select **Nova** in Pegasus's theme settings, and point Pegasus at a catalogue containing your own files. Existing themes and catalogue settings need not be replaced. The theme uses the runtime's system font; no third-party font binaries are bundled.
 
-Plain Pegasus can display the theme, browse, filter, and keep games in theme memory. The optional `deviceLibrary` bridge adds durable personal progress and collections. The demo makes no claim that a file exists on a real device. See [the metadata contract](docs/CATALOGUE.md) when producing your own catalogue.
+Plain Pegasus can display the theme, browse, filter, and keep games in theme memory. Settings separates appearance, progress sync, read-only observed-file storage, launcher controls and catalogue refresh guidance. Home surfaces a stopping note when one exists. The optional `deviceLibrary` bridge adds durable personal progress and collections. The demo makes no claim that a file exists on a real device. See [the metadata contract](docs/CATALOGUE.md) when producing your own catalogue.
 
 ## Native source
 

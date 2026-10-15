@@ -1,9 +1,9 @@
 # Validation boundaries
 
-The release is source-only. The final recent-first Home and console browsing source passed the checks below on 2026-10-15.
+The release is source-only. The recent-first Home, console browsing, Settings, Apps and explicit disc-picker source passed the checks below on 2026-10-15.
 
 - Python tests exercise deterministic demo generation, refusal to overwrite output, fictional/non-launchable catalogue entries, and privacy-scan rejection fixtures.
-- Node tests load the actual QML JavaScript helper file and exercise identity, missing-file launch gating, unknown-vs-zero time, explicit personal progress overrides, filtering and sorting.
+- Node tests load the actual QML JavaScript helper file and exercise identity, missing-file launch gating, unknown-vs-zero time, explicit personal progress overrides, filtering and sorting, observed storage, explicit disc grouping and app identity. Gameplay date evidence preserves its source and precision; catalogue markers do not establish game-file presence.
 - The native patch was applied to a pristine archive of the pinned Pegasus commit in private scratch. Every resulting modified/new file matched the complete captured native source, with the documented bridge README rewrite.
 - `tools/check_native_patch.py` checks the exact Git base, clean state, and patch application without mutating a provided checkout.
 - The actual-theme synthetic QML wrapper passed an offscreen Qt 6.11.1 runtime smoke on macOS. Enter, X, Y, arrows, Escape, Page Up/Page Down, Home/End exercised the theme key handler; kept toggles, details, unavailable-route explanation, console filtering and return were checked. This used a mock Pegasus API and an isolated temporary copy. It is not physical keyboard/controller input, real engine discovery, game-launch, private bridge or screenshot proof.
@@ -11,3 +11,7 @@ The release is source-only. The final recent-first Home and console browsing sou
 - A full portable native build, native fixture tests from this exact patch, service synchronization, physical controller/game launching and Android installation are separate verification gates.
 
 No binaries or private QA artifacts are supplied. Do not turn the successful patch check into an APK/source identity claim.
+
+The private integration harness additionally exercised Settings/storage reverse paths, raw-file totals, explicit disc grouping, picker defaults/cancel/dispatch, app-only lists, unavailable Steam app actions, missing app routes and malformed evidence. Hardware checks distinguish injected input from physical controls; desktop fixtures are not an Android performance claim.
+
+On Android, an unhandled Back key can close a Qt window. Preserve existing cancel bindings and add `Back` through Pegasus controls/settings. For an untouched default map the resulting setting is `keys.cancel: Esc,Backspace,GamepadB,Back`. Do not overwrite a customized map with those defaults. This is a host configuration step, not a native binary shipped by this source repository.

@@ -27,12 +27,13 @@ FocusScope {
     readonly property color rowFaint: Qt.rgba(ink.r, ink.g, ink.b, 0.3)
     readonly property color slab: light ? "#e1e1de" : "#1a1c1e"
 
-    // Use the runtime font so the source theme needs no bundled font asset.
     readonly property string sans: global.fonts.sans
 
     // ---------- state ----------
 
     property var rawEntries: []       // api.allGames order
+    property var presentationEntries: [] // explicit disc sets collapse only in browse surfaces
+    readonly property int gameCount: presentationEntries.filter(function(e) { return e.systemId !== "androidapps" && e.systemId !== "emulators"; }).length
     property var allEntries: []       // A to Z, for the Home fallback
     property var entryById: ({})
     property var homeEntries: []
@@ -40,6 +41,9 @@ FocusScope {
     property var homeGapAfter: ({})   // id -> true where a segment ends
     property bool homeIsFallback: false
     property var libraryEntries: []
+    property var appsEntries: []
+    property int appIndex: 0
+    property string appsReturnView: "home"
     property var pins: []
     property var appearance: ({ surface: "dark", size: "standard", time: false })
 
@@ -71,6 +75,8 @@ FocusScope {
     property int navIndex: 0
     property int searchCol: 0         // 0 search field, 1 filter control
     property int panelIndex: 0
+    property int settingsIndex: 0
+    property var discTarget: null
     property int detailAction: 0
     property int homeIndex: 0
     property int libIndex: 0
@@ -84,11 +90,13 @@ FocusScope {
 
     readonly property var homeCurrent: homeIndex >= 0 && homeIndex < homeEntries.length ? homeEntries[homeIndex] : null
     readonly property var libCurrent: libIndex >= 0 && libIndex < libraryEntries.length ? libraryEntries[libIndex] : null
+    readonly property var appCurrent: appIndex >= 0 && appIndex < appsEntries.length ? appsEntries[appIndex] : null
     readonly property var currentThread: threadIndex >= 0 && threadIndex < threads.length ? threads[threadIndex] : null
     readonly property var threadMember: currentThread && memberIndex >= 0 && memberIndex < currentThread.entries.length
                                         ? currentThread.entries[memberIndex] : null
     readonly property var current: view === "home" ? homeCurrent
                                  : view === "library" ? libCurrent
+                                 : view === "apps" ? appCurrent
                                  : view === "threads" && threadZone === "members" ? threadMember : null
     readonly property bool currentPinned: current !== null && pins.indexOf(current.id) !== -1
     readonly property bool filtering: Lib.filtersActive(filters)
@@ -100,8 +108,8 @@ FocusScope {
     readonly property string kPrev: Lib.keyLabel(api.keys.prevPage, "L1")
     readonly property string kNext: Lib.keyLabel(api.keys.nextPage, "R1")
 
-    readonly property var views: ["home", "library", "consoles", "threads"]
-    readonly property var viewNames: ({ home: "Home", library: "Library", consoles: "Consoles", threads: "Collections" })
+    readonly property var views: ["home", "library", "consoles", "threads", "apps"]
+    readonly property var viewNames: ({ home: "Home", library: "Library", consoles: "Consoles", threads: "Collections", apps: "Apps" })
 
     onCurrentChanged: {
         if (!ready)
@@ -119,11 +127,12 @@ FocusScope {
 
     function saveFocus() {
         var f = memGet("focus", {}) || {};
-        var out = { home: f.home || "", library: f.library || "", thread: f.thread || "", console: f.console || "", consoleBrowse: fromConsole };
+        var out = { home: f.home || "", library: f.library || "", thread: f.thread || "", console: f.console || "", app: f.app || "", consoleBrowse: fromConsole };
         if (consoleSystems.length && consoleSystems[consoleIndex]) out.console = consoleSystems[consoleIndex].id;
         if (homeCurrent) out.home = homeCurrent.id;
         if (libCurrent) out.library = libCurrent.id;
         if (currentThread) out.thread = currentThread.id;
+        if (appCurrent) out.app = appCurrent.id;
         api.memory.set("focus", out);
         api.memory.set("view", view);
     }
@@ -159,6 +168,7 @@ FocusScope {
     }
 
     onConsoleIndexChanged: if (ready) saveTimer.restart()
+    onAppIndexChanged: if (ready) saveTimer.restart()
 
     // ---------- models ----------
 
@@ -174,28 +184,40 @@ FocusScope {
         }
         Lib.applyPersonal(raw, device);
         rawEntries = raw;
-        allEntries = Lib.sortEntries(raw, "alpha");
         entryById = byId;
-        systems = Lib.systemsOf(raw);
+        rebuildPresentations();
         now = Date.now();
+    }
+
+    function rebuildPresentations() {
+        var appId = appCurrent ? appCurrent.id : "";
+        appsEntries = Lib.sortEntries(rawEntries.filter(function(e) { return e.systemId === "androidapps"; }), "alpha");
+        setAppIndex(Math.max(0, Lib.indexOfId(appsEntries, appId)));
+        presentationEntries = Lib.groupEntries(rawEntries);
+        allEntries = Lib.sortEntries(presentationEntries, "alpha");
+        systems = Lib.systemsOf(presentationEntries);
     }
 
     function rebuildHome(keepId) {
         var seen = {};
+        var grouped = Lib.groupEntries(rawEntries);
         function take(list, cap) {
             var out = [];
             for (var i = 0; i < list.length && out.length < cap; i++) {
                 var e = list[i];
-                if (e && !seen[e.id]) {
+                if (!e || e.systemId === "androidapps" || e.systemId === "emulators") continue;
+                if (e && !e.discMembers) e = Lib.presentEdition(e, grouped);
+                var key = e ? Lib.presentationKey(e) : "";
+                if (e && !seen[key]) {
                     out.push(e);
-                    seen[e.id] = true;
+                    seen[key] = true;
                 }
             }
             return out;
         }
         // The handheld's own launcher history comes first. Imported activity
         // and seeded catalogue picks are labelled separately from local play.
-        var localRecent = take(Lib.sortEntries(rawEntries.filter(function(e) {
+        var localRecent = take(Lib.sortEntries(grouped.filter(function(e) {
             return e.lastPlayedHere !== null && e.launchable;
         }), "local-recent"), 6);
         var playing = take(Lib.sortEntries(rawEntries.filter(function(e) { return e.status === "playing"; }), "recent"), 6);
@@ -221,7 +243,7 @@ FocusScope {
         var fallback = false;
         if (!out.length) {
             for (var j = 0; j < allEntries.length && out.length < 12; j++) {
-                if (allEntries[j].launchable) {
+                if (allEntries[j].launchable && allEntries[j].systemId !== "androidapps" && allEntries[j].systemId !== "emulators") {
                     out.push(allEntries[j]);
                     captions[allEntries[j].id] = "Set up here";
                 }
@@ -242,7 +264,7 @@ FocusScope {
 
     function rebuildLibrary(keepId) {
         var previous = libraryEntries;
-        var out = Lib.sortEntries(Lib.filterEntries(rawEntries, filters, pins, searchText), sortMode);
+        var out = Lib.sortEntries(Lib.filterEntries(Lib.groupEntries(rawEntries), filters, pins, searchText), sortMode);
         libraryEntries = out;
         setLibIndex(Lib.stableIndex(out, previous, libAnchorId, keepId), true, true);
     }
@@ -409,6 +431,7 @@ FocusScope {
 
         var f = memGet("focus", {}) || {};
         libAnchorId = f.library || "";
+        setAppIndex(Math.max(0, Lib.indexOfId(appsEntries, f.app)));
         fromConsole = f.consoleBrowse === true && filters.system !== "";
         for (var c = 0; c < consoleSystems.length; c++)
             if (consoleSystems[c].id === f.console) consoleIndex = c;
@@ -468,7 +491,14 @@ FocusScope {
         }
     }
 
+    function setAppIndex(i) {
+        appIndex = Math.max(0, Math.min(appsEntries.length - 1, i));
+        appsList.currentIndex = appIndex;
+        if (appsEntries.length) appsList.positionViewAtIndex(appIndex, ListView.Contain);
+    }
+
     function switchView(v) {
+        if (v === "apps" && view !== "apps") appsReturnView = view;
         if (editingSearch)
             endSearch(false);
         overlay = "";
@@ -488,6 +518,17 @@ FocusScope {
     }
 
     function play(e) {
+        if (!e) return;
+        if (e.discMembers) {
+            discTarget = e;
+            var preferred = Lib.defaultDisc(e.discMembers);
+            openPanel("discs", Lib.indexOfId(e.discMembers, preferred.id));
+            return;
+        }
+        playEdition(e);
+    }
+
+    function playEdition(e) {
         if (!e)
             return;
         if (!e.launchable || e.game.missing) {
@@ -536,14 +577,14 @@ FocusScope {
         if (i === 0) setAppearance("surface", appearance.surface === "dark" ? "light" : "dark");
         else if (i === 1) setAppearance("size", appearance.size === "standard" ? "large" : "standard");
         else if (i === 2) setAppearance("time", !appearance.time);
-        else if (i === 3) requestSync();
+
     }
 
     function navActivate(i) {
         if (i < views.length) {
             fromConsole = false;
             switchView(views[i]);
-        } else openPanel("appearance", 0);
+        } else openPanel("settings", settingsIndex);
     }
 
     function selectConsole(i) {
@@ -553,8 +594,8 @@ FocusScope {
     }
 
     function consoleReady(id) {
-        return rawEntries.filter(function(e) {
-            return (id === "?" ? !e.systemId : e.systemId === id) && e.launchable && !e.game.missing;
+        return presentationEntries.filter(function(e) {
+            return (id === "?" ? !e.systemId : e.systemId === id) && e.launchable && !e.missing;
         }).length;
     }
 
@@ -592,7 +633,14 @@ FocusScope {
     }
 
     function closeOverlay() {
-        if (overlay === "status" || overlay === "threadpick" || (overlay === "text" && overlayReturn === "details"))
+        if (overlay === "discs") {
+            overlay = overlayReturn === "details" ? "details" : "";
+            discTarget = null;
+        } else if (["appearance", "storage", "controls", "refresh"].indexOf(overlay) !== -1 && overlayReturn === "settings") {
+            overlay = "settings";
+            panelIndex = settingsIndex;
+            overlayReturn = "";
+        } else if (overlay === "status" || overlay === "threadpick" || (overlay === "text" && overlayReturn === "details"))
             overlay = "details";
         else
             overlay = "";
@@ -807,6 +855,7 @@ FocusScope {
         var r = Lib.shortRoute(e);
         if (r)
             parts.push(r);
+        if (e.discMembers) parts.push("Disc " + e.discNumber + " record");
         if (e.status !== "unknown" && !(view === "home" && homeCaptions[e.id] === "Playing"))
             parts.push(Lib.STATUS_LABELS[e.status]);
         if (appearance.time && e.minutes)
@@ -819,8 +868,26 @@ FocusScope {
             return [];
         var out = [];
         out.push({ t: Lib.routeSentence(e), q: false });
+        if (e.discMembers) {
+            out.push({ t: "Notes, status and favourites shown here belong to Disc " + e.discNumber + ". Other discs keep separate records.", q: false });
+            e = e.discEdition;
+        }
         if (e.readyDevices.length)
-            out.push({ t: "Ready on " + e.readyDevices.map(Lib.deviceName).join(" and ") + ", per the catalogue export.", q: true });
+            out.push({ t: "Launch route on " + e.readyDevices.map(Lib.deviceName).join(" and ") + ", per the catalogue export.", q: true });
+        if (e.systemId === "androidapps") {
+            out.push({ t: Lib.appPurpose(e) + ".", q: false });
+            return out;
+        }
+        if (Lib.isSteamGame(e) && !e.launchable)
+            out.push({ t: droidDeckApp()
+                ? "Open DroidDeck, then search “" + e.title + "” in Steam to check or install it there."
+                : "DroidDeck isn't configured here. Check this game in your Steam app; Library cannot install it from this entry.", q: false });
+        out.push({ t: e.novaGameplayNote && e.novaGameplaySource && e.novaGameplayObservedAt && Lib.dateEvidenceText(e.novaGameplayObservedAt) !== "Date unknown"
+            ? "Gameplay check on Nova · " + Lib.dateEvidenceText(e.novaGameplayObservedAt) + " · " + e.novaGameplaySource + ": " + e.novaGameplayNote
+            : "Gameplay on Nova: not checked. A configured launch route does not establish compatibility or performance.", q: true });
+        out.push({ t: e.displayAspect && e.displayAspectSource
+            ? "Screen aspect: " + e.displayAspect + " (" + e.displayAspectSource + "). Screen fit on this device is not checked."
+            : "Screen fit: not checked. Original aspect ratio is unknown.", q: true });
         out.push({ t: "Nova: " + (e.nova || "not checked"), q: true });
         out.push({ t: "Legion: " + (e.legion || "not checked"), q: true });
 
@@ -845,7 +912,7 @@ FocusScope {
         if (names.length)
             out.push({ t: "In threads: " + names.join(", "), q: true });
         if (e.deviceFit)
-            out.push({ t: "Device fit: " + e.deviceFit, q: true });
+            out.push({ t: "Catalogue fit note: " + e.deviceFit + ". This does not verify the original aspect ratio.", q: true });
         var why = [];
         if (homeCaptions[e.id] === "Starter pick") why.push("a preselected starter pick");
         if (pins.indexOf(e.id) !== -1) why.push("kept");
@@ -860,16 +927,29 @@ FocusScope {
         return out;
     }
 
+    function droidDeckApp() {
+        return Lib.configuredApp(rawEntries, "com.droiddeck.launcher", "DroidDeck");
+    }
+
+    function openDroidDeck() {
+        var app = droidDeckApp();
+        if (!app) { say("DroidDeck has no configured app route here."); return; }
+        say("Opening DroidDeck. Search this game in Steam there.");
+        playEdition(app);
+    }
+
     function detailActions() {
         var e = current;
         if (!e)
             return [];
         var out = [];
-        if (e.launchable) out.push({ a: "play", l: "Play" });
-        out.push({ a: "keep", l: currentPinned ? "Remove" : "Keep" });
+        if (e.systemId === "androidapps") return e.launchable ? [{ a: "play", l: "Open app" }] : [];
+        if (e.discMembers || e.launchable) out.push({ a: "play", l: e.discMembers ? "Choose disc" : "Play" });
+        if (Lib.isSteamGame(e) && !e.launchable && droidDeckApp()) out.push({ a: "droiddeck", l: "Open DroidDeck" });
+        out.push({ a: "keep", l: (currentPinned ? "Remove" : "Keep") + (e.discMembers ? " disc " + e.discNumber : "") });
         if (canEdit) {
             out.push({ a: "status", l: "Status" });
-            out.push({ a: "note", l: "Checkpoint" });
+            out.push({ a: "note", l: "Stopping note" });
             out.push({ a: "thread", l: "Threads" });
         }
         return out;
@@ -882,14 +962,20 @@ FocusScope {
         detailAction = i;
         var a = list[i].a;
         if (a === "play") play(current);
+        else if (a === "droiddeck") openDroidDeck();
         else if (a === "keep") toggleKeep(current);
         else if (a === "status") openPanel("status", Math.max(0, Lib.STATUSES.indexOf(current.status)));
         else if (a === "note") openText("checkpoint", current.id);
         else if (a === "thread") openPanel("threadpick", 0);
     }
 
-    // One list panel for Appearance, Filters, Status and the thread picker.
+    // Settings and its read-only guides reuse the existing list panel.
     function panelTitle() {
+        if (overlay === "discs") return discTarget ? discTarget.title + " · choose a disc" : "Choose a disc";
+        if (overlay === "settings") return "Settings";
+        if (overlay === "storage") return "Observed ROM files";
+        if (overlay === "controls") return "Launcher controls";
+        if (overlay === "refresh") return "Library refresh";
         if (overlay === "appearance") return "Appearance";
         if (overlay === "filters") return "Filter and sort";
         if (overlay === "status") return "Status";
@@ -897,13 +983,73 @@ FocusScope {
         return "";
     }
 
+    function isListPanel() {
+        return ["discs", "settings", "appearance", "storage", "controls", "refresh", "filters", "status", "threadpick"].indexOf(overlay) !== -1;
+    }
+
+    function storageRows() {
+        var summary = Lib.storageSummary(rawEntries);
+        function label(g) {
+            return g.known ? Lib.bytesText(g.bytes) + (g.unknown ? " · " + g.unknown + " unknown" : "") : "Unknown";
+        }
+        var rows = [{ label: summary.unknown ? "Partial observed total" : "Observed total", value: label(summary), evidence: summary }];
+        summary.groups.forEach(function(g) { rows.push({ label: g.name, value: label(g), evidence: g }); });
+        if (summary.largest.length) {
+            rows.push({ label: "Largest observed files", value: "", dim: true });
+            summary.largest.slice(0, 8).forEach(function(e) {
+                rows.push({ label: e.title, value: Lib.bytesText(e.sizeBytes), entry: e });
+            });
+        }
+        return rows;
+    }
+
+    function captureText(oldest, newest) {
+        if (oldest === null) return "Capture date unknown.";
+        return "Captured " + Lib.utcDateText(oldest) + (newest !== oldest ? " to " + Lib.utcDateText(newest) : "") + ".";
+    }
+
+    function homeCheckpoint(e) {
+        if (!e || !e.checkpoint) return "";
+        return (e.discMembers ? "Disc " + e.discNumber + " · " : "")
+             + (e.checkpointSource === "you" ? "You stopped: " : "Catalogue note: ") + e.checkpoint;
+    }
+
     function panelRows(rev) {
+        if (overlay === "discs") return discTarget ? discTarget.discMembers.map(function(e) {
+            return { label: "Disc " + e.discNumber, value: e.game.missing ? "File missing here" : e.launchable ? "Set up here" : "Not set up here" };
+        }) : [];
+        if (overlay === "settings")
+            return [
+                { label: "Appearance", value: appearance.surface === "light" ? "Light" : "Dark" },
+                { label: "Sync progress", value: syncLabel() },
+                { label: "Storage", value: "Observed ROM files" },
+                { label: "Launcher controls", value: "Button guide" },
+                { label: "Library refresh", value: "Catalogue and artwork" }
+            ];
+        if (overlay === "storage") return storageRows();
+        if (overlay === "controls")
+            return [
+                { label: "Choose / play", value: kAccept },
+                { label: "Back", value: kCancel },
+                { label: "Game details", value: kDetails },
+                { label: "Favourite / filters", value: kKeep },
+                { label: "Previous / next page", value: kPrev + " / " + kNext },
+                { label: "Native launcher menu", value: "Start (default)" }
+            ];
+        if (overlay === "refresh") {
+            var stamp = Lib.storageSummary(rawEntries).exported;
+            return [
+                { label: "Catalogue export", value: Lib.utcDateText(stamp) },
+                { label: "Games in catalogue", value: String(gameCount) },
+                { label: "Browse entries", value: String(presentationEntries.length) },
+                { label: "Catalogue entries", value: String(rawEntries.length) }
+            ];
+        }
         if (overlay === "appearance")
             return [
                 { label: "Surface", value: appearance.surface === "light" ? "Light" : "Dark" },
                 { label: "Text size", value: appearance.size === "large" ? "Larger" : "Standard" },
-                { label: "Play time on focus", value: appearance.time ? "Shown" : "Hidden" },
-                { label: "Device Library", value: syncLabel() }
+                { label: "Play time on focus", value: appearance.time ? "Shown" : "Hidden" }
             ];
         if (overlay === "filters")
             return [
@@ -929,24 +1075,58 @@ FocusScope {
     }
 
     function panelFooter(rev) {
+        if (overlay === "discs") {
+            var member = discTarget && discTarget.discMembers[panelIndex];
+            return member ? Lib.routeSentence(member)
+                + (member.lastPlayedHere !== null ? " Last opened here: " + Lib.ago(member.lastPlayedHere, now) + "." : " No local launch history.")
+                + " This launches the selected disc. Changing discs during a running game uses the emulator." : "";
+        }
+        if (overlay === "settings") {
+            if (panelIndex === 1) return "Sync sends saved progress, favourites and notes. It does not scan games or download artwork."
+                + (device && device.sync.message ? " " + device.sync.message : "");
+            return "Your launcher settings. Emulator controls are configured inside each emulator.";
+        }
+        if (overlay === "controls") return "These are the current launcher bindings. Start opens the native menu with the default mapping; its Settings includes controller mapping. Stopping notes are in game details. Emulator controls are separate. This guide does not change mappings.";
+        if (overlay === "refresh") return "New games and artwork come from a refreshed catalogue. This build loads the catalogue prepared on your computer; progress sync does not scan files. The refreshed catalogue must be transferred and loaded before new games or artwork appear.";
+        if (overlay === "storage") {
+            var rows = storageRows();
+            var row = rows[panelIndex];
+            var evidence = row && row.entry ? { known: 1, unknown: 0, oldest: row.entry.sizeObservedAt, newest: row.entry.sizeObservedAt, undated: row.entry.sizeObservedAt === null ? 1 : 0 }
+                         : row && row.evidence ? row.evidence : Lib.storageSummary(rawEntries);
+            return "Observed ROM file bytes only. " + evidence.known + " known · " + evidence.unknown + " unknown. "
+                 + captureText(evidence.oldest, evidence.newest)
+                 + (evidence.oldest !== null && evidence.undated ? " " + evidence.undated + " capture dates unknown." : "")
+                 + " Not current disk usage or free space.";
+        }
         if (overlay === "appearance") {
             var msg = device && device.sync.message ? " " + device.sync.message : "";
             return "Saved with this theme on this device. Play time is lifetime time from the catalogue, not story progress."
                    + msg;
         }
         if (overlay === "filters")
-            return "Showing " + libraryEntries.length + " of " + rawEntries.length
+            return "Showing " + libraryEntries.length + " of " + presentationEntries.length + " browse entries · " + gameCount + " games · " + rawEntries.length + " catalogue entries"
                    + ". Status is only what you or the catalogue set. Unknown dates and times sort last.";
         if (overlay === "status")
-            return (current ? current.title + ". " : "") + "Status is yours to set. Play time never changes it.";
+            return (current ? current.title + ". " : "") + (current && current.discMembers ? "Disc " + current.discNumber + " record. " : "") + "Status is yours to set. Play time never changes it.";
         if (overlay === "threadpick")
-            return current ? "Choose a thread to add or remove " + current.title + "." : "";
+            return current ? "Choose a thread to add or remove " + current.title + (current.discMembers ? " · Disc " + current.discNumber : "") + "." : "";
         return "";
     }
 
     function panelActivate(i, step) {
         panelIndex = i;
-        if (overlay === "appearance") cycleAppearance(i);
+        if (overlay === "discs") {
+            var member = discTarget && discTarget.discMembers[i];
+            if (member && member.launchable && !member.game.missing) playEdition(member);
+            else say("This disc isn't set up here. No game was launched.");
+        } else if (overlay === "settings") {
+            settingsIndex = i;
+            if (i === 0) openPanel("appearance", 0);
+            else if (i === 1) requestSync();
+            else if (i === 2) openPanel("storage", 0);
+            else if (i === 3) openPanel("controls", 0);
+            else if (i === 4) openPanel("refresh", 0);
+        } else if (overlay === "appearance") cycleAppearance(i);
         else if (overlay === "filters") cycleFilter(i, step);
         else if (overlay === "status") { setStatus(Lib.STATUSES[i]); closeOverlay(); }
         else if (overlay === "threadpick") {
@@ -957,6 +1137,13 @@ FocusScope {
     }
 
     function hints() {
+        if (overlay === "discs") {
+            var member = discTarget && discTarget.discMembers[panelIndex];
+            return [{ k: kAccept, l: member && member.launchable && !member.game.missing ? "Play disc" : "Unavailable", a: "panel" }, { k: kCancel, l: "Back", a: "close" }];
+        }
+        if (overlay === "settings") return [{ k: kAccept, l: panelIndex === 1 ? "Sync now" : "Open", a: "panel" }, { k: kCancel, l: "Back", a: "close" }];
+        if (overlay === "storage" || overlay === "controls" || overlay === "refresh")
+            return [{ k: "↑ ↓", l: "Read", a: "read" }, { k: kCancel, l: "Back", a: "close" }];
         if (overlay === "appearance" || overlay === "filters") {
             var p = [{ k: kAccept, l: "Change", a: "panel" }];
             if (overlay === "filters" && filtering) p.push({ k: kDetails, l: "Clear filters", a: "clearfilters" });
@@ -977,6 +1164,11 @@ FocusScope {
             if (filtering) s.push({ k: kDetails, l: "Clear filters", a: "clearfilters" });
             return s;
         }
+        if (view === "apps" && !current) return [{ k: kCancel, l: "Back", a: "appsback" }];
+        if (view === "apps") return [
+            { k: kAccept, l: current && current.launchable ? "Open app" : "Details", a: "play" },
+            { k: kDetails, l: "Details", a: "details" }, { k: kCancel, l: "Back", a: "appsback" }
+        ];
         if (view === "consoles")
             return consoleSystems.length ? [{ k: kAccept, l: "Browse games", a: "console" }, { k: kCancel, l: "Home", a: "home" }]
                                   : [{ k: kCancel, l: "Home", a: "home" }];
@@ -988,18 +1180,21 @@ FocusScope {
             return t;
         }
         var h = [];
-        if (current && current.launchable) h.push({ k: kAccept, l: "Play", a: "play" });
+        if (current && !current.launchable && Lib.isSteamGame(current)) h.push({ k: kAccept, l: "Details", a: "play" });
+        if (current && (current.discMembers || current.launchable)) h.push({ k: kAccept, l: current.discMembers ? "Choose disc" : "Play", a: "play" });
         if (current) h.push({ k: kDetails, l: "Details", a: "details" });
-        if (current) h.push({ k: kKeep, l: currentPinned ? "Unfavourite" : "Favourite", a: "keep" });
+        if (current) h.push({ k: kKeep, l: (currentPinned ? "Unfavourite" : "Favourite") + (current.discMembers ? " disc " + current.discNumber : ""), a: "keep" });
         return h;
     }
 
     function runHint(a) {
         if (a === "play") play(current);
+        else if (a === "droiddeck") openDroidDeck();
         else if (a === "details") openDetails();
         else if (a === "keep") toggleKeep(current);
         else if (a === "close") closeOverlay();
         else if (a === "panel") panelActivate(panelIndex, 1);
+        else if (a === "read") panelIndex = Math.min(panelRows(personalRev).length - 1, panelIndex + 1);
         else if (a === "nav") navActivate(navIndex);
         else if (a === "content") zone = "content";
         else if (a === "search") beginSearch();
@@ -1008,6 +1203,7 @@ FocusScope {
         else if (a === "clearfilters") clearFilters();
         else if (a === "console") browseConsole();
         else if (a === "home") switchView("home");
+        else if (a === "appsback") switchView(appsReturnView);
         else if (a === "openthread") openThread();
         else if (a === "keepthread") keepThread(currentThread);
         else if (a === "newthread") openText("thread-name", "");
@@ -1055,7 +1251,7 @@ FocusScope {
             return;
         }
 
-        if (overlay === "appearance" || overlay === "filters" || overlay === "status" || overlay === "threadpick") {
+        if (isListPanel()) {
             event.accepted = true;
             var rows = panelRows(personalRev).length;
             // Left and right change a value; they never trigger Sync or Clear filters.
@@ -1126,6 +1322,19 @@ FocusScope {
             return;
         }
 
+        if (view === "apps") {
+            if (k.isUp(event)) { if (appIndex === 0 || !appsEntries.length) { zone = "nav"; navIndex = views.indexOf("apps"); } else setAppIndex(appIndex - 1); }
+            else if (k.isDown(event)) setAppIndex(appIndex + 1);
+            else if (k.isPageUp(event)) setAppIndex(appIndex - 6);
+            else if (k.isPageDown(event)) setAppIndex(appIndex + 6);
+            else if (k.isAccept(event)) play(current);
+            else if (k.isDetails(event)) openDetails();
+            else if (k.isCancel(event)) switchView(appsReturnView);
+            else return;
+            event.accepted = true;
+            return;
+        }
+
         if (view === "consoles") {
             if (k.isLeft(event)) selectConsole(consoleIndex - 1);
             else if (k.isRight(event)) selectConsole(consoleIndex + 1);
@@ -1186,7 +1395,7 @@ FocusScope {
 
     Rectangle { anchors.fill: parent; color: root.ground }
 
-    // Top line: three destinations and the appearance panel.
+    // Top line: the library destinations and Settings.
     Item {
         id: nav
         x: px(64)
@@ -1198,7 +1407,7 @@ FocusScope {
         Row {
             spacing: px(40)
             Repeater {
-                model: ["Home", "Library", "Consoles", "Collections"]
+                model: root.views.map(function(v) { return root.viewNames[v]; })
                 delegate: Item {
                     width: navLabel.implicitWidth
                     height: nav.height
@@ -1235,7 +1444,7 @@ FocusScope {
             height: nav.height
             Text {
                 id: lookLabel
-                text: "Appearance"
+                text: "Settings"
                 color: root.quiet
                 font.family: root.sans
                 font.pixelSize: fs(24)
@@ -1296,7 +1505,7 @@ FocusScope {
                 Text {
                     x: px(22); anchors.bottom: parent.bottom; anchors.bottomMargin: px(20)
                     width: parent.width - px(44)
-                    text: root.consoleReady(modelData.id) + " set up here · " + modelData.count + " in catalogue"
+                    text: root.consoleReady(modelData.id) + " set up here · " + modelData.count + " games in catalogue"
                     color: root.quiet; font.family: root.sans; font.pixelSize: fs(18)
                     wrapMode: Text.Wrap
                 }
@@ -1311,6 +1520,84 @@ FocusScope {
             visible: !root.consoleSystems.length; x: px(64); y: px(230)
             text: "No systems in this catalogue yet."; color: root.quiet
             font.family: root.sans; font.pixelSize: fs(26)
+        }
+    }
+
+    // ---------- Apps: existing Android app routes, separate from game discovery ----------
+
+    Item {
+        id: appsView
+        anchors.fill: parent
+        visible: root.view === "apps" && root.overlay === ""
+        readonly property real rowH: Math.round(fs(30) * 2.6)
+        ListView {
+            id: appsList
+            x: px(40); y: px(140)
+            width: Math.round(root.width * 0.44)
+            height: Math.floor((root.height - px(244)) / appsView.rowH) * appsView.rowH
+            clip: true
+            model: root.appsEntries
+            currentIndex: root.appIndex
+            highlightRangeMode: ListView.ApplyRange
+            preferredHighlightBegin: appsView.rowH
+            preferredHighlightEnd: height - appsView.rowH
+            highlightMoveDuration: 0
+            keyNavigationEnabled: false
+            boundsBehavior: Flickable.StopAtBounds
+            delegate: Item {
+                width: appsList.width; height: appsView.rowH
+                readonly property bool isCurrent: index === root.appIndex
+                Rectangle {
+                    visible: parent.isCurrent && root.zone === "content"
+                    width: Math.max(3, px(4)); height: fs(30)
+                    anchors.verticalCenter: parent.verticalCenter; color: root.ink
+                }
+                Column {
+                    x: px(24); width: parent.width - px(40)
+                    anchors.verticalCenter: parent.verticalCenter; spacing: px(3)
+                    Text {
+                        width: parent.width; text: modelData.title
+                        color: parent.parent.isCurrent ? root.ink : modelData.launchable ? root.rowQuiet : root.rowFaint
+                        font.family: root.sans; font.pixelSize: fs(30)
+                        font.weight: parent.parent.isCurrent ? Font.DemiBold : Font.Normal
+                        elide: Text.ElideRight
+                    }
+                    Text {
+                        width: parent.width; text: Lib.appPurpose(modelData)
+                        color: root.faint; font.family: root.sans; font.pixelSize: fs(19)
+                        elide: Text.ElideRight
+                    }
+                }
+                MouseArea {
+                    objectName: "appRow_" + index
+                    anchors.fill: parent
+                    onClicked: { root.zone = "content"; if (index === root.appIndex) root.play(root.appCurrent); else root.setAppIndex(index); }
+                }
+            }
+        }
+        Column {
+            x: root.width * 0.51; y: px(154)
+            width: root.width - x - px(64); spacing: px(20)
+            visible: root.appCurrent !== null
+            Text {
+                width: parent.width; text: root.appCurrent ? root.appCurrent.title : ""
+                color: root.ink; font.family: root.sans; font.pixelSize: fs(44); font.weight: Font.DemiBold
+                maximumLineCount: 2; elide: Text.ElideRight; wrapMode: Text.Wrap
+            }
+            Text {
+                width: parent.width; text: Lib.appPurpose(root.appCurrent)
+                color: root.quiet; font.family: root.sans; font.pixelSize: fs(26); wrapMode: Text.Wrap
+            }
+            Text {
+                width: parent.width; text: root.appCurrent ? Lib.routeSentence(root.appCurrent) : ""
+                color: root.faint; font.family: root.sans; font.pixelSize: fs(24); wrapMode: Text.Wrap
+            }
+        }
+        Text {
+            visible: !root.appsEntries.length; x: px(64); y: px(160)
+            width: root.width - px(128)
+            text: "No Android app entries in this catalogue yet."
+            color: root.quiet; font.family: root.sans; font.pixelSize: fs(26); wrapMode: Text.Wrap
         }
     }
 
@@ -1431,6 +1718,7 @@ FocusScope {
                 font.family: root.sans
                 font.pixelSize: fs(44)
                 font.weight: Font.DemiBold
+                maximumLineCount: 1
                 elide: Text.ElideRight
             }
             Text {
@@ -1448,7 +1736,26 @@ FocusScope {
                 color: root.faint
                 font.family: root.sans
                 font.pixelSize: fs(24)
+                maximumLineCount: 1
+                elide: Text.ElideRight
+            }
+            Text {
+                objectName: "homeCheckpoint"
+                width: parent.width
+                visible: root.homeCurrent !== null && (root.homeCurrent.checkpoint !== "" || root.canEdit)
+                text: root.homeCheckpoint(root.homeCurrent) || "Add a stopping note · " + root.kDetails + " Details"
+                color: root.homeCurrent && root.homeCurrent.checkpoint ? root.quiet : root.faint
+                font.family: root.sans
+                font.pixelSize: fs(24)
+                maximumLineCount: root.wide ? 1 : 2
+                elide: Text.ElideRight
                 wrapMode: Text.Wrap
+                MouseArea {
+                    objectName: "homeNote"
+                    anchors.fill: parent
+                    enabled: root.canEdit && root.homeCurrent !== null
+                    onClicked: root.openText("checkpoint", root.homeCurrent.id)
+                }
             }
         }
 
@@ -2114,7 +2421,7 @@ FocusScope {
     Item {
         id: panel
         anchors.fill: parent
-        visible: root.overlay === "appearance" || root.overlay === "filters" || root.overlay === "status" || root.overlay === "threadpick"
+        visible: root.isListPanel()
 
         MouseArea { anchors.fill: parent }
 
@@ -2124,7 +2431,10 @@ FocusScope {
             id: panelHead
             x: px(64)
             y: px(64)
+            width: root.width - px(128)
             text: root.panelTitle()
+            maximumLineCount: 1
+            elide: Text.ElideRight
             color: root.ink
             font.family: root.sans
             font.pixelSize: fs(40)
@@ -2215,7 +2525,7 @@ FocusScope {
             spacing: px(14)
 
             Text {
-                text: root.textMode === "checkpoint" ? "Checkpoint" : "New thread"
+                text: root.textMode === "checkpoint" ? "Stopping note" : "New thread"
                 color: root.ink
                 font.family: root.sans
                 font.pixelSize: fs(40)
@@ -2421,7 +2731,7 @@ FocusScope {
                 }
             }
             Text {
-                visible: root.view !== "threads"
+                visible: root.views.indexOf(root.view) < root.views.length - 1
                 text: root.kNext + "  " + root.viewNames[root.views[Math.min(root.views.length - 1, root.views.indexOf(root.view) + 1)]]
                 color: root.faint
                 font.family: root.sans

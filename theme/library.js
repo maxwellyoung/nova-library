@@ -18,7 +18,7 @@ var SORT_LABELS = {
     recommended: "Recommended"
 };
 var DEVICES = ["", "here", "nova", "legion"];
-var DEVICE_LABELS = { "": "Any device", here: "Ready here", nova: "Ready on Nova", legion: "Ready on Legion" };
+var DEVICE_LABELS = { "": "Any device", here: "Route here", nova: "Route on Nova", legion: "Route on Legion" };
 
 // Pegasus stores every x-field as a string list. Join it back into one string.
 function extra(game, key) {
@@ -117,6 +117,150 @@ function progressState(raw) {
     return STATUS_LABELS[s] !== undefined ? s : "unknown";
 }
 
+// ROM bytes come from a captured file observation, not a current disk query.
+function fileBytes(raw) {
+    var value = String(raw === undefined || raw === null ? "" : raw).trim();
+    if (!/^\d+$/.test(value)) return null;
+    var n = Number(value);
+    return isFinite(n) && n <= 9007199254740991 ? n : null;
+}
+
+function isoTime(raw) {
+    var value = String(raw || "").trim();
+    return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? time(value) : null;
+}
+
+function utcDateText(stamp) {
+    if (stamp === null || stamp === undefined) return "Date unknown";
+    var value = new Date(stamp);
+    if (typeof stamp === "string" && /^\d{4}-\d{2}-\d{2}$/.test(stamp))
+        return !isNaN(value.getTime()) && value.toISOString().slice(0, 10) === stamp ? stamp : "Date unknown";
+    return isNaN(value.getTime()) ? "Date unknown" : value.toISOString().slice(0, 16).replace("T", " ") + " UTC";
+}
+
+function dateEvidenceText(raw) {
+    var value = String(raw || "").trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return utcDateText(value);
+    var stamp = isoTime(value);
+    return stamp === null ? "Date unknown" : utcDateText(stamp);
+}
+
+function bytesText(n) {
+    if (n === null || n === undefined) return "Unknown";
+    var units = ["B", "KiB", "MiB", "GiB", "TiB"];
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? String(n) : n.toFixed(n >= 10 ? 1 : 2).replace(/\.?0+$/, "")) + " " + units[i];
+}
+
+function storageSummary(entries) {
+    var out = { groups: [], largest: [], known: 0, unknown: 0, bytes: 0, oldest: null, newest: null, undated: 0, exported: null };
+    var bySystem = {};
+    entries.forEach(function(e) {
+        if (e.systemId === "androidapps" || e.systemId === "emulators") return;
+        var id = e.systemId || "?";
+        var g = bySystem[id];
+        if (!g) {
+            g = { id: id, name: e.systemName || "Unknown system", known: 0, unknown: 0, bytes: 0, oldest: null, newest: null, undated: 0 };
+            bySystem[id] = g; out.groups.push(g);
+        }
+        if (e.sizeBytes === null || e.sizeBytes === undefined) { g.unknown++; out.unknown++; }
+        else {
+            g.known++; g.bytes += e.sizeBytes; out.known++; out.bytes += e.sizeBytes;
+            out.largest.push(e);
+            if (e.sizeObservedAt !== null && e.sizeObservedAt !== undefined) {
+                g.oldest = g.oldest === null ? e.sizeObservedAt : Math.min(g.oldest, e.sizeObservedAt);
+                g.newest = g.newest === null ? e.sizeObservedAt : Math.max(g.newest, e.sizeObservedAt);
+                out.oldest = out.oldest === null ? e.sizeObservedAt : Math.min(out.oldest, e.sizeObservedAt);
+                out.newest = out.newest === null ? e.sizeObservedAt : Math.max(out.newest, e.sizeObservedAt);
+            } else { g.undated++; out.undated++; }
+        }
+        if (e.catalogueGeneratedAt !== null && e.catalogueGeneratedAt !== undefined)
+            out.exported = out.exported === null ? e.catalogueGeneratedAt : Math.max(out.exported, e.catalogueGeneratedAt);
+    });
+    out.groups.sort(function(a, b) { return a.name.localeCompare(b.name); });
+    out.largest.sort(function(a, b) { return b.sizeBytes - a.sizeBytes || a.title.localeCompare(b.title); });
+    return out;
+}
+
+// Grouping is presentation only: member edition IDs, routes and progress never change.
+function discNumber(raw) {
+    var n = fileBytes(raw);
+    return n !== null && n > 0 ? n : null;
+}
+
+function defaultDisc(members) {
+    return members.slice().sort(function(a, b) {
+        var aa = a.lastPlayedHere === null || a.lastPlayedHere === undefined ? -1 : a.lastPlayedHere;
+        var bb = b.lastPlayedHere === null || b.lastPlayedHere === undefined ? -1 : b.lastPlayedHere;
+        return bb - aa || a.discNumber - b.discNumber;
+    })[0] || null;
+}
+
+function discPresentation(members, scope) {
+    var preferred = defaultDisc(members);
+    var base = scope || preferred;
+    var out = {};
+    Object.keys(base).forEach(function(k) { out[k] = base[k]; });
+    out.discMembers = members.slice().sort(function(a, b) { return a.discNumber - b.discNumber; });
+    out.discEdition = base;
+    out.discDefaultId = preferred.id;
+    out.title = base.discSetName;
+    if (!out.art) {
+        var art = members.filter(function(e) { return !!e.art; });
+        if (art.length) out.art = art[0].art;
+    }
+    out.sortKey = out.title.toLowerCase();
+    out.launchable = members.some(function(e) { return e.launchable && !e.game.missing; });
+    out.missing = members.every(function(e) { return e.game.missing; });
+    out.lastPlayedHere = preferred.lastPlayedHere;
+    return out;
+}
+
+function presentationKey(e) {
+    return e.discMembers ? "disc-set:" + e.discSetId : "edition:" + e.id;
+}
+
+function groupEntries(entries) {
+    var candidates = {}, groups = {}, out = [], seen = {};
+    entries.forEach(function(e) {
+        if (!e.discSetId || !e.discSetName || e.discNumber === null || e.discNumber === undefined) return;
+        var key = "$" + e.discSetId;
+        if (!candidates[key]) candidates[key] = [];
+        candidates[key].push(e);
+    });
+    Object.keys(candidates).forEach(function(key) {
+        var members = candidates[key], numbers = {};
+        var valid = members.length >= 2 && members.every(function(e) {
+            if (numbers[e.discNumber] || e.systemId !== members[0].systemId || e.discSetName !== members[0].discSetName) return false;
+            numbers[e.discNumber] = true;
+            return true;
+        });
+        if (valid) groups[key] = discPresentation(members);
+    });
+    entries.forEach(function(e) {
+        var group = groups["$" + e.discSetId];
+        var belongs = group && group.discMembers.some(function(m) { return m.id === e.id; });
+        if (!belongs) { out.push(e); return; }
+        var key = presentationKey(group);
+        if (!seen[key]) { seen[key] = true; out.push(group); }
+    });
+    return out;
+}
+
+function presentEdition(e, presentations) {
+    for (var i = 0; i < presentations.length; i++) {
+        var p = presentations[i];
+        if (p.discMembers && p.discMembers.some(function(m) { return m.id === e.id; }))
+            return discPresentation(p.discMembers, e);
+    }
+    return e;
+}
+
+function discReadyCount(e) {
+    return e.discMembers ? e.discMembers.filter(function(m) { return m.launchable && !m.game.missing; }).length : 0;
+}
+
 function makeEntry(game) {
     var id = stableId(game);
     var systemId = extra(game, "system-id").toLowerCase();
@@ -147,11 +291,20 @@ function makeEntry(game) {
         sortKey: (game.sortBy || game.title || "").toLowerCase(),
         art: artUrl(game),
         developer: game.developer || "",
+        appPackage: extra(game, "app-package"),
+        novaGameplayNote: extra(game, "nova-gameplay-note"),
+        novaGameplaySource: extra(game, "nova-gameplay-source"),
+        novaGameplayObservedAt: extra(game, "nova-gameplay-observed-at"),
+        displayAspect: extra(game, "display-aspect"),
+        displayAspectSource: extra(game, "display-aspect-source"),
         genre: game.genre || "",
         home: extra(game, "home") === "true",
         launchable: extra(game, "launchable") === "true" && !game.missing,
         missing: game.missing,
         route: extra(game, "route-label"),
+        discSetId: extra(game, "disc-set-id"),
+        discSetName: extra(game, "disc-set-name"),
+        discNumber: discNumber(extra(game, "disc-number")),
         systemId: systemId,
         systemName: systemName || (systemId ? systemId.toUpperCase() : ""),
         readyDevices: list(extra(game, "ready-devices")).map(function(d) { return d.toLowerCase(); }),
@@ -163,6 +316,9 @@ function makeEntry(game) {
         nova: extra(game, "nova-location"),
         legion: extra(game, "legion-location"),
         story: story,
+        sizeBytes: fileBytes(extra(game, "size-bytes")),
+        sizeObservedAt: isoTime(extra(game, "size-observed-at")),
+        catalogueGeneratedAt: isoTime(extra(game, "catalogue-generated-at")),
         source: extra(game, "catalog-source"),
         deviceFit: extra(game, "device-fit"),
         threadIds: list(extra(game, "thread-ids")),
@@ -187,7 +343,7 @@ function indexOfId(list, id) {
     if (!id)
         return -1;
     for (var i = 0; i < list.length; i++)
-        if (list[i].id === id)
+        if (list[i].id === id || (list[i].discMembers && list[i].discMembers.some(function(m) { return m.id === id; })))
             return i;
     return -1;
 }
@@ -218,16 +374,48 @@ function keyLabel(keylist, fallback) {
     return keyboard || fallback;
 }
 
+function isSteamGame(e) {
+    return !!(e && e.systemId === "pc" && e.id.indexOf("steam:") === 0);
+}
+
+function appMatches(e, packageName, title) {
+    return e.systemId === "androidapps" && (e.appPackage ? e.appPackage === packageName : e.title === title);
+}
+
+function configuredApp(entries, packageName, title) {
+    var available = entries.filter(function(e) { return e.launchable && !e.game.missing && appMatches(e, packageName, title); });
+    available.sort(function(a, b) {
+        var aa = a.appPackage === packageName ? 0 : 1, bb = b.appPackage === packageName ? 0 : 1;
+        return aa - bb || byTitle(a, b);
+    });
+    return available[0] || null;
+}
+
+function appPurpose(e) {
+    if (!e) return "";
+    if (appMatches(e, "com.droiddeck.launcher", "DroidDeck")) return "Steam library, installs and game setup";
+    if (appMatches(e, "dev.jdtech.jellyfin", "Findroid") || appMatches(e, "org.jellyfin.mobile", "Jellyfin")) return "Jellyfin films and shows";
+    if (e.title === "Files" && e.systemId === "androidapps") return "Browse files on this device";
+    return "Android app";
+}
+
 function routeSentence(e) {
+    if (e.systemId === "androidapps")
+        return e.game.missing ? "This app shortcut is unavailable here."
+             : e.launchable ? "App shortcut set up here."
+             : "This app is not set up in Library yet.";
+    if (e.discMembers)
+        return e.discMembers.length + " discs · " + discReadyCount(e) + " set up here. Choose a disc before launching. File presence does not prove every disc runs.";
     if (e.missing)
         return "The file isn't where the library expects it on this device, so Play is off.";
     if (!e.launchable)
         return "No launch route is set up for this here yet, so Play is off.";
     var via = e.route ? "Opens in " + e.route + "." : "Has a launch route on this device.";
-    return via + " The file was found here, which doesn't prove the game runs.";
+    return via + " A configured route does not prove compatibility or performance.";
 }
 
 function shortRoute(e) {
+    if (e.discMembers) return e.discMembers.length + " discs · " + discReadyCount(e) + " set up here";
     if (e.missing)
         return "File not found here";
     if (!e.launchable)
@@ -400,7 +588,14 @@ function filterEntries(entries, f, pins, query) {
     for (var i = 0; i < pins.length; i++)
         pinned[pins[i]] = true;
     var q = (query || "").trim().toLowerCase();
-    return entries.filter(function(e) { return matches(e, f, pinned, q); });
+    var out = [];
+    entries.forEach(function(e) {
+        if (!e.discMembers) { if (matches(e, f, pinned, q)) out.push(e); return; }
+        var nameMatch = q && e.title.toLowerCase().indexOf(q) !== -1;
+        var matching = e.discMembers.filter(function(m) { return matches(m, f, pinned, nameMatch ? "" : q); });
+        if (matching.length) out.push(discPresentation(e.discMembers, defaultDisc(matching)));
+    });
+    return out;
 }
 
 function byTitle(a, b) {
