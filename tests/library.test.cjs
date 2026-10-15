@@ -135,3 +135,25 @@ test('a Steam catalogue marker never becomes a claimed local game-file observati
   assert.match(Lib.routeSentence(entry), /configured route/);
   assert.doesNotMatch(Lib.routeSentence(entry), /file was found/);
 });
+
+test('explicit playlist aliases collapse into an existing same-system disc set without deleting records', () => {
+  const members = [1, 2].map(n => Lib.makeEntry(game('Example disc '+n, {'edition-id':['demo:disc'+n], 'system-id':['psx'], 'disc-set-id':['demo:set'], 'disc-set-name':['Example'], 'disc-number':[String(n)]})));
+  const alias = Lib.makeEntry(game('Playlist', {'edition-id':['demo:playlist'], 'system-id':['psx'], 'disc-alias-for':['demo:set']}));
+  const raw = [alias,...members]; const grouped=Lib.groupEntries(raw);
+  assert.equal(grouped.length,1); assert.equal(raw.length,3); assert.equal(grouped[0].discMembers.length,2);
+  assert.equal(Lib.presentEdition(alias,grouped).discMembers.length,2);
+});
+test('unresolved and cross-system playlist aliases remain visible', () => {
+  const alias=Lib.makeEntry(game('Unresolved', {'edition-id':['demo:alias'], 'system-id':['pc'], 'disc-alias-for':['demo:set']}));
+  assert.equal(Lib.groupEntries([alias]).length,1);
+  const members=[1,2].map(n=>Lib.makeEntry(game('Disc '+n,{'edition-id':['demo:d'+n], 'system-id':['psx'], 'disc-set-id':['demo:set'], 'disc-set-name':['Example'], 'disc-number':[String(n)]})));
+  assert.equal(Lib.groupEntries([...members,alias]).length,2);
+});
+
+test('cleanTitle drops dump tags but keeps disc numbers', () => {
+  assert.equal(Lib.cleanTitle('Super Mario All-Stars (U) [!]'), 'Super Mario All-Stars');
+  assert.equal(Lib.cleanTitle('Metal Gear Solid (USA) (Disc 1)'), 'Metal Gear Solid (Disc 1)');
+  assert.equal(Lib.cleanTitle('Metal Gear Solid - Peace Walker (USA) (PSP) (PSN)'), 'Metal Gear Solid - Peace Walker');
+  assert.equal(Lib.cleanTitle('(USA)'), '(USA)');
+  assert.equal(Lib.cleanTitle('SSX 3'), 'SSX 3');
+});

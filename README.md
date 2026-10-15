@@ -19,6 +19,8 @@ Use arrow keys to move, Enter to select, Escape to return, X for details, Y to f
 
 The interface also includes an Apps index, explicit multi-disc selection, and an Open DroidDeck action for Steam editions without a configured local game route. That action opens the app so you can find/install the game there; it does not start a download. Gameplay evidence and screen fit are shown separately from launch availability.
 
+Home greets you by time of day and names the last game you opened. `theme/Owner.js` holds an optional name and a short "Right now" list of edition ids that lead Home. A game's Details offer **Controls**: its emulator's buttons, plus game-specific cards for the titles in `theme/Guides.js`. Settings → Status shows the last health check if a `health.json` sits beside the catalogue; without one it says no check has arrived. Library labels an active filter and counts what it shows, and drops dump tags such as "(USA)" or "[!]" from displayed titles.
+
 See [validation](docs/VALIDATION.md) for which steps were exercised. A passing helper test or generated demo is not proof of the GUI running on a device.
 
 ## Use the theme in Pegasus

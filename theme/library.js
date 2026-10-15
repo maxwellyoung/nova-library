@@ -239,8 +239,16 @@ function groupEntries(entries) {
         if (valid) groups[key] = discPresentation(members);
     });
     entries.forEach(function(e) {
-        var group = groups["$" + e.discSetId];
-        var belongs = group && group.discMembers.some(function(m) { return m.id === e.id; });
+        var group = groups["$" + e.discAliasFor];
+        if (group && e.systemId === group.systemId) {
+            if (!group.discAliasIds) group.discAliasIds = [];
+            group.discAliasIds.push(e.id);
+        }
+    });
+    entries.forEach(function(e) {
+        var group = groups["$" + (e.discSetId || e.discAliasFor)];
+        var belongs = group && (group.discMembers.some(function(m) { return m.id === e.id; })
+                       || (group.discAliasIds || []).indexOf(e.id) !== -1);
         if (!belongs) { out.push(e); return; }
         var key = presentationKey(group);
         if (!seen[key]) { seen[key] = true; out.push(group); }
@@ -251,6 +259,7 @@ function groupEntries(entries) {
 function presentEdition(e, presentations) {
     for (var i = 0; i < presentations.length; i++) {
         var p = presentations[i];
+        if ((p.discAliasIds || []).indexOf(e.id) !== -1) return p;
         if (p.discMembers && p.discMembers.some(function(m) { return m.id === e.id; }))
             return discPresentation(p.discMembers, e);
     }
@@ -259,6 +268,17 @@ function presentEdition(e, presentations) {
 
 function discReadyCount(e) {
     return e.discMembers ? e.discMembers.filter(function(m) { return m.launchable && !m.game.missing; }).length : 0;
+}
+
+// Dump tags such as "(USA)", "(U) [!]" or "(Rev 1)" are file provenance, not the game's name.
+var REGION_TAG = /\s*(\[[^\]]*\]|\((USA|U|Europe|E|Japan|J|World|W|PSN|PSP|En(,[A-Z][a-z])*|Rev \w+|v\d[\d.]*)\))\s*$/;
+
+function cleanTitle(raw) {
+    var t = String(raw || ""), prev;
+    var disc = /\s*\(Disc \d+\)\s*$/.exec(t);
+    if (disc) t = t.slice(0, disc.index);
+    do { prev = t; t = t.replace(REGION_TAG, ""); } while (t !== prev && t);
+    return t ? t + (disc ? " " + disc[0].trim() : "") : String(raw || "");
 }
 
 function makeEntry(game) {
@@ -287,8 +307,8 @@ function makeEntry(game) {
     return {
         game: game,
         id: id,
-        title: game.title,
-        sortKey: (game.sortBy || game.title || "").toLowerCase(),
+        title: cleanTitle(game.title),
+        sortKey: (game.sortBy || cleanTitle(game.title) || "").toLowerCase(),
         art: artUrl(game),
         developer: game.developer || "",
         appPackage: extra(game, "app-package"),
@@ -304,8 +324,9 @@ function makeEntry(game) {
         launchable: extra(game, "launchable") === "true" && !game.missing,
         missing: game.missing,
         route: extra(game, "route-label"),
+        discAliasFor: extra(game, "disc-alias-for"),
         discSetId: extra(game, "disc-set-id"),
-        discSetName: extra(game, "disc-set-name"),
+        discSetName: cleanTitle(extra(game, "disc-set-name")),
         discNumber: discNumber(extra(game, "disc-number")),
         systemId: systemId,
         systemName: systemName || (systemId ? systemId.toUpperCase() : ""),
@@ -629,6 +650,14 @@ function sortEntries(entries, mode) {
 }
 
 // Systems present in the catalogue, by name, for the filter to cycle through.
+var CONSOLE_SHORT = { snes: "Super Nintendo", n64: "Nintendo 64", gc: "GameCube", gbc: "Game Boy Color",
+    psx: "PlayStation", ps2: "PlayStation 2", psp: "PSP", dreamcast: "Dreamcast", nds: "Nintendo DS", pc: "PC" };
+
+// Catalogue system names are long ("Nintendo SNES (Super Nintendo)"); cards use the common name.
+function consoleShortName(system) {
+    return (system && CONSOLE_SHORT[system.id]) || (system && system.name) || "";
+}
+
 function systemsOf(entries) {
     var seen = {};
     var out = [];
@@ -689,6 +718,42 @@ function ago(t, now) {
     var d = new Date(t);
     var year = new Date(now).getFullYear() === d.getFullYear() ? "" : " " + d.getFullYear();
     return d.getDate() + " " + MONTHS[d.getMonth()] + year;
+}
+
+// ---------- greeting ----------
+
+function greeting(name, now) {
+    var h = new Date(now).getHours();
+    var who = name ? ", " + name : "";
+    if (h >= 5 && h < 12) return "Morning" + who + ".";
+    if (h >= 12 && h < 18) return "Afternoon" + who + ".";
+    if (h >= 18 && h < 23) return "Evening" + who + ".";
+    return name ? "Late one, " + name + "." : "Up late.";
+}
+
+function sinceText(t, now) {
+    var m = Math.floor((now - t) / 60000);
+    if (m < 2) return "just now";
+    if (m < 60) return m + " min ago";
+    var h = Math.floor(m / 60);
+    if (h < 24) return h + (h === 1 ? " hour ago" : " hours ago");
+    return ago(t, now).toLowerCase();
+}
+
+// One line about where you left off: your own stopping note wins over a bare "last played".
+function leftOffLine(entries, now) {
+    var last = null;
+    for (var i = 0; i < entries.length; i++) {
+        var e = entries[i];
+        if (e && e.lastPlayedHere !== null && e.lastPlayedHere !== undefined
+                && (!last || e.lastPlayedHere > last.lastPlayedHere))
+            last = e;
+    }
+    if (!last) return "";
+    var title = last.discSetName || last.title;
+    if (last.checkpoint && last.checkpointSource === "you")
+        return title + " · you stopped at: " + last.checkpoint;
+    return "Last played: " + title + " · " + sinceText(last.lastPlayedHere, now);
 }
 
 // ---------- threads ----------
