@@ -33,3 +33,5 @@ Optional app identity: `x-app-package` identifies an Android app entry. The Apps
 Optional gameplay evidence uses `x-nova-gameplay-note`, `x-nova-gameplay-source` and `x-nova-gameplay-observed-at` together. The original observation date is independent of catalogue export time. A short interaction check is not sustained performance evidence. `x-display-aspect` requires `x-display-aspect-source`; absent evidence remains unknown. Legacy `x-device-fit` is a catalogue note, not proof of original aspect or rendering behavior.
 
 Home is a game shelf: Android apps and emulator utilities are excluded from recent, favourite and fallback Home selections. Their entries remain available in Apps or Library.
+
+Per-device installation and filesystem-capacity fields are specified in [Installation observations](installation-observations.md). They retain scan dates and do not promote launch routes.

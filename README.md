@@ -25,7 +25,7 @@ See [validation](docs/VALIDATION.md) for which steps were exercised. A passing h
 
 Copy the `theme/` directory to a new theme directory in your Pegasus configuration, select **Nova** in Pegasus's theme settings, and point Pegasus at a catalogue containing your own files. Existing themes and catalogue settings need not be replaced. The theme uses the runtime's system font; no third-party font binaries are bundled.
 
-Plain Pegasus can display the theme, browse, filter, and keep games in theme memory. Settings separates appearance, progress sync, read-only observed-file storage, launcher controls and catalogue refresh guidance. Home surfaces a stopping note when one exists. The optional `deviceLibrary` bridge adds durable personal progress and collections. The demo makes no claim that a file exists on a real device. See [the metadata contract](docs/CATALOGUE.md) when producing your own catalogue.
+Plain Pegasus can display the theme, browse, filter, and keep games in theme memory. Settings separates appearance, progress sync, storage snapshots and file-management shortcuts, launcher controls and catalogue refresh guidance. Home surfaces a stopping note when one exists. The optional `deviceLibrary` bridge adds durable personal progress and collections. The demo makes no claim that a file exists on a real device. See [the metadata contract](docs/CATALOGUE.md) when producing your own catalogue.
 
 ## Native source
 
@@ -46,7 +46,7 @@ The patch adds SQLite-backed offline actions, snapshot validation, conflict rete
 
 ```sh
 python3 -m unittest discover -s tests -v
-node --test tests/library.test.cjs
+node --test tests/*.cjs
 python3 tools/privacy_scan.py
 python3 tools/smoke_demo.py
 ```
@@ -58,3 +58,5 @@ Python tooling uses only the standard library. JavaScript helper tests need Node
 Nova interface and repository tooling: Maxwell Young, 2026. Pegasus native source: the Pegasus contributors. The native modifications and Nova source are distributed under GPL-3.0-or-later with the preserved Pegasus supplementary terms in [LICENSE.md](LICENSE.md). See [PROVENANCE.md](PROVENANCE.md) for the precise boundary.
 
 This is an early source release. No APK, ROM, commercial cover art, private library or credential is included. Before distributing a modified native binary, replace upstream Pegasus title/logo assets in accordance with its supplementary license terms and provide the complete matching source, dependency notices and build instructions. Applying a patch does not prove a binary was built from it.
+
+Storage snapshots, per-device installation cues and the compact Info flow are described in [Installation observations](docs/installation-observations.md).

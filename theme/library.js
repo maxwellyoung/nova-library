@@ -292,6 +292,8 @@ function makeEntry(game) {
         art: artUrl(game),
         developer: game.developer || "",
         appPackage: extra(game, "app-package"),
+        installations: installationData(extra(game, "installations")),
+        capacity: capacityData(extra(game, "storage-volume")),
         novaGameplayNote: extra(game, "nova-gameplay-note"),
         novaGameplaySource: extra(game, "nova-gameplay-source"),
         novaGameplayObservedAt: extra(game, "nova-gameplay-observed-at"),
@@ -764,4 +766,68 @@ function originLabel(t) {
     if (t.origin === "kept") return "Kept";
     if (t.origin === "catalogue") return "Catalogue";
     return "Suggested";
+}
+
+
+// Installation observations are independent of launch routes and gameplay checks.
+function installationData(raw) {
+    if (!raw || raw.length > 16384) return {};
+    try { var data = JSON.parse(raw); return data && typeof data === "object" && !Array.isArray(data) ? data : {}; }
+    catch (err) { return {}; }
+}
+
+function installation(e, device) {
+    if (e && e.discMembers) {
+        var members = e.discMembers.map(function(m) { return installation(m, device); });
+        var installed = members.filter(function(m) { return m.state === "installed"; }).length;
+        var absent = members.filter(function(m) { return m.state === "absent"; }).length;
+        var state = installed === members.length ? "installed" : absent === members.length ? "absent"
+                  : installed || members.some(function(m) { return m.state === "partial"; }) ? "partial" : "unknown";
+        return { state: state, observedAt: members.map(function(m) { return m.observedAt; }).filter(Boolean).sort()[0] || "",
+                 source: "Per-disc observations", scopeComplete: absent === members.length, offline: members.some(function(m) { return m.offline; }) };
+    }
+    var raw = e && e.installations ? e.installations[device] : null;
+    var valid = raw && ["installed", "absent", "partial"].indexOf(raw.state) !== -1
+                && typeof raw.source === "string" && raw.source.trim() && dateEvidenceText(raw.observedAt) !== "Date unknown"
+                && (raw.state !== "absent" || raw.scopeComplete === true);
+    return valid ? { state: raw.state, observedAt: raw.observedAt, source: raw.source, scopeComplete: raw.scopeComplete === true, offline: raw.offline === true }
+                 : { state: "unknown", observedAt: "", source: "", scopeComplete: false, offline: false };
+}
+
+function installLabel(e, device) {
+    var v = installation(e, device);
+    return { installed: "Installed", absent: "Not installed", partial: "Incomplete", unknown: "Not checked" }[v.state];
+}
+
+function availabilityText(e) {
+    var nova = installation(e, "nova"), legion = installation(e, "legion");
+    if (nova.state === "installed" && legion.state === "installed") return "Nova + Legion";
+    if (nova.state === "installed") return "On Nova";
+    if (legion.state === "installed") return "Seen on Legion";
+    if (nova.state === "absent" && legion.state === "absent") return "Absent in both scans";
+    if (nova.state === "partial") return "Part of this game is on Nova";
+    if (nova.state === "absent") return "Not on Nova";
+    return "Install status not checked";
+}
+
+function capacityData(raw) {
+    if (!raw || raw.length > 4096) return null;
+    try {
+        var v = JSON.parse(raw);
+        if (!v || v.id !== "internal-data" || !v.source || dateEvidenceText(v.observedAt) === "Date unknown") return null;
+        for (var i = 0; i < 3; i++) {
+            var n = v[["total", "used", "free"][i]];
+            if (typeof n !== "number" || !isFinite(n) || Math.floor(n) !== n || n < 0 || n > 9007199254740991) return null;
+        }
+        return v.total > 0 && v.used + v.free <= v.total ? v : null;
+    } catch (err) { return null; }
+}
+
+function storageCapacity(entries) {
+    var captured = entries.map(function(e) { return e.capacity; }).filter(function(v) { return v !== null && v !== undefined; });
+    captured.sort(function(a, b) { return time(b.observedAt) - time(a.observedAt); });
+    if (!captured.length) return null;
+    var newest = captured[0];
+    if (captured.some(function(v) { return v.observedAt === newest.observedAt && (v.total !== newest.total || v.used !== newest.used || v.free !== newest.free); })) return null;
+    return newest;
 }

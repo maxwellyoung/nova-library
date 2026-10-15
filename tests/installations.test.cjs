@@ -1,0 +1,12 @@
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
+const L=vm.createContext({});vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../theme/library.js'),'utf8').replace(/^\.pragma library\s*/,''),L);
+const fact=(state,more={})=>({state,source:'Synthetic scan',observedAt:'2026-10-14T08:00:00Z',scopeComplete:true,...more});
+test('launch configuration does not establish installation',()=>assert.equal(L.installation({launchable:true},'nova').state,'unknown'));
+test('positive observation preserves date and offline state',()=>{let f=L.installation({installations:{legion:fact('installed',{offline:true})}},'legion');assert.equal(f.observedAt,'2026-10-14T08:00:00Z');assert.equal(f.offline,true)});
+test('absence requires a complete scan and evidence date',()=>{for(let more of [{scopeComplete:false},{observedAt:''},{source:''}])assert.equal(L.installation({installations:{nova:fact('absent',more)}},'nova').state,'unknown');assert.equal(L.installation({installations:{nova:fact('absent')}},'nova').state,'absent')});
+test('unknown other device prevents absent everywhere claim',()=>{assert.equal(L.availabilityText({installations:{nova:fact('absent')}}),'Not on Nova');assert.equal(L.availabilityText({installations:{nova:fact('absent'),legion:fact('absent')}}),'Absent in both scans')});
+test('incomplete disc set does not say whole game installed',()=>{let e={discMembers:[{installations:{nova:fact('installed')}},{}]};assert.equal(L.installation(e,'nova').state,'partial')});
+const cap={id:'internal-data',source:'Synthetic df',observedAt:'2026-10-14T08:00:00Z',total:100,used:90,free:5};
+test('capacity preserves unavailable gap and zero free',()=>{assert.equal(L.capacityData(JSON.stringify(cap)).free,5);assert.equal(L.capacityData(JSON.stringify({...cap,free:0})).free,0)});
+test('invalid or missing capacity remains unknown',()=>{for(let v of [{...cap,free:11},{...cap,total:0},{...cap,used:true},{...cap,observedAt:''},{...cap,free:-1}])assert.equal(L.capacityData(JSON.stringify(v)),null)});
+test('conflicting snapshots are not a trustworthy graph',()=>assert.equal(L.storageCapacity([{capacity:cap},{capacity:{...cap,free:4}}]),null));

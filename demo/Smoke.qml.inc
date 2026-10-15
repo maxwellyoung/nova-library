@@ -14,6 +14,18 @@
                 require(ui.pins.length !== pinCount, "Y did not toggle keep");
                 key(ui,Qt.Key_X);
                 require(ui.overlay === "details", "X did not open details");
+                var infoIndex=ui.detailActions().map(function(a){return a.a;}).indexOf("facts");
+                require(infoIndex !== -1, "Info action missing");
+                ui.runDetailAction(infoIndex);
+                require(ui.overlay === "facts", "Info did not open");
+                key(ui,Qt.Key_Escape);
+                require(ui.overlay === "details", "Info did not return to details");
+                var originals=ui.rawEntries;
+                ui.rawEntries=originals.concat([{systemId:"androidapps",capacity:{id:"internal-data",total:100,used:90,free:5,observedAt:"2026-10-14T08:00:00Z",source:"Synthetic df"}}]);
+                ui.openPanel("storage",0);
+                require(ui.overlay === "storage", "Storage did not open");
+                require(ui.storageRows()[0].label === "Known ROM files", "Storage ROM summary missing");
+                ui.rawEntries=originals; ui.overlay="details";
                 key(ui,Qt.Key_Escape);
                 require(ui.overlay === "", "Escape did not close details");
                 key(ui,Qt.Key_Return);

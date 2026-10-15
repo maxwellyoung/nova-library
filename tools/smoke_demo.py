@@ -30,7 +30,10 @@ def smoke(qml, imports):
                                 capture_output=True, text=True, timeout=25)
         print(result.stdout, end='')
         print(result.stderr, end='')
-        if result.returncode or 'NOVA_DEMO_SMOKE_PASS' not in result.stdout + result.stderr:
+        diagnostics = result.stdout + result.stderr
+        if any(marker in diagnostics for marker in ['TypeError:', 'ReferenceError:', 'possible QQuickItem::polish() loop', 'depends on non-bindable properties']):
+            raise RuntimeError('Synthetic QML smoke reported runtime errors')
+        if result.returncode or 'NOVA_DEMO_SMOKE_PASS' not in diagnostics:
             raise RuntimeError('Synthetic QML smoke did not pass')
 
 

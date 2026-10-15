@@ -633,7 +633,8 @@ FocusScope {
     }
 
     function closeOverlay() {
-        if (overlay === "discs") {
+        if (overlay === "facts") { overlay = "details";
+        } else if (overlay === "discs") {
             overlay = overlayReturn === "details" ? "details" : "";
             discTarget = null;
         } else if (["appearance", "storage", "controls", "refresh"].indexOf(overlay) !== -1 && overlayReturn === "settings") {
@@ -852,7 +853,7 @@ FocusScope {
         var parts = [];
         if (view === "home" && homeCaptions[e.id])
             parts.push(homeCaptions[e.id]);
-        var r = Lib.shortRoute(e);
+        var r = e.systemId === "androidapps" ? Lib.shortRoute(e) : Lib.availabilityText(e) + (e.launchable ? " · " + Lib.shortRoute(e) : " · Needs setup");
         if (r)
             parts.push(r);
         if (e.discMembers) parts.push("Disc " + e.discNumber + " record");
@@ -868,6 +869,7 @@ FocusScope {
             return [];
         var out = [];
         out.push({ t: Lib.routeSentence(e), q: false });
+        ["nova", "legion"].forEach(function(d) { var v = Lib.installation(e,d); out.push({ t: Lib.deviceName(d) + " install: " + Lib.installLabel(e,d) + (v.observedAt ? " · " + Lib.dateEvidenceText(v.observedAt) + " · " + v.source + (v.offline ? " · device offline at refresh" : "") : ""), q: true }); });
         if (e.discMembers) {
             out.push({ t: "Notes, status and favourites shown here belong to Disc " + e.discNumber + ". Other discs keep separate records.", q: false });
             e = e.discEdition;
@@ -927,6 +929,27 @@ FocusScope {
         return out;
     }
 
+    function overviewLines(e, rev) {
+        if (!e) return [];
+        if (e.systemId === "androidapps") return [{ t: Lib.appPurpose(e), q: false, icon: "apps" }, { t: e.launchable ? "Open app" : "Needs setup", q: true, icon: "info" }];
+        var out = [{ t: e.discMembers ? e.discMembers.length + " discs · " + Lib.discReadyCount(e) + " set up here" : e.launchable ? (e.route || "Local shortcut configured") : "Needs setup here", q: false, icon: e.discMembers ? "disc" : "play" }];
+        if (e.discMembers) { out.push({ t: "Disc " + e.discNumber + " progress record", q: true, icon: "note" }); e = e.discEdition; }
+        var checked = e.novaGameplayNote && e.novaGameplaySource && Lib.dateEvidenceText(e.novaGameplayObservedAt) !== "Date unknown";
+        out.push({ t: checked ? "Short check · " + String(e.novaGameplayObservedAt).slice(0,10) : "Gameplay untested", q: true, icon: checked ? "check" : "info" });
+        out.push({ t: e.displayAspect && e.displayAspectSource ? "Aspect · " + e.displayAspect : "Aspect not checked", q: true, icon: "aspect" });
+        if (e.status !== "unknown") out.push({ t: Lib.STATUS_LABELS[e.status], q: false, icon: "note" });
+        if (e.checkpoint) out.push({ t: "Stopped: " + e.checkpoint + (e.pending ? " · sync pending" : ""), q: false, icon: "note" });
+        if (e.conflict) out.push({ t: "Progress conflict · open Info", q: false, icon: "info" });
+        if (e.minutes) out.push({ t: "Lifetime · " + e.minutes, q: true, icon: "clock" });
+        if (e.recReason) out.push({ t: e.recReason, q: true, icon: "star" });
+        return out;
+    }
+
+    function storageApp(kind) {
+        if (kind === "steam") return droidDeckApp();
+        return rawEntries.filter(function(e) { return e.systemId === "androidapps" && e.title === "Files" && e.launchable && !e.game.missing; })[0] || null;
+    }
+
     function droidDeckApp() {
         return Lib.configuredApp(rawEntries, "com.droiddeck.launcher", "DroidDeck");
     }
@@ -952,6 +975,7 @@ FocusScope {
             out.push({ a: "note", l: "Stopping note" });
             out.push({ a: "thread", l: "Threads" });
         }
+        out.push({ a: "facts", l: "Info" });
         return out;
     }
 
@@ -963,6 +987,7 @@ FocusScope {
         var a = list[i].a;
         if (a === "play") play(current);
         else if (a === "droiddeck") openDroidDeck();
+        else if (a === "facts") { overlay = "facts"; detailFlick.contentY = 0; }
         else if (a === "keep") toggleKeep(current);
         else if (a === "status") openPanel("status", Math.max(0, Lib.STATUSES.indexOf(current.status)));
         else if (a === "note") openText("checkpoint", current.id);
@@ -973,7 +998,7 @@ FocusScope {
     function panelTitle() {
         if (overlay === "discs") return discTarget ? discTarget.title + " · choose a disc" : "Choose a disc";
         if (overlay === "settings") return "Settings";
-        if (overlay === "storage") return "Observed ROM files";
+        if (overlay === "storage") return "Storage";
         if (overlay === "controls") return "Launcher controls";
         if (overlay === "refresh") return "Library refresh";
         if (overlay === "appearance") return "Appearance";
@@ -992,8 +1017,10 @@ FocusScope {
         function label(g) {
             return g.known ? Lib.bytesText(g.bytes) + (g.unknown ? " · " + g.unknown + " unknown" : "") : "Unknown";
         }
-        var rows = [{ label: summary.unknown ? "Partial observed total" : "Observed total", value: label(summary), evidence: summary }];
-        summary.groups.forEach(function(g) { rows.push({ label: g.name, value: label(g), evidence: g }); });
+        var rows = [{ label: "Known ROM files", value: label(summary), evidence: summary }];
+        if (storageApp("files")) rows.push({ label: "Manage files", value: "Open Files", app: "files" });
+        if (storageApp("steam")) rows.push({ label: "Steam storage", value: "Open DroidDeck", app: "steam" });
+        summary.groups.forEach(function(g) { rows.push({ label: g.name, value: label(g), evidence: g, fraction: summary.bytes && g.known ? g.bytes / summary.bytes : 0 }); });
         if (summary.largest.length) {
             rows.push({ label: "Largest observed files", value: "", dim: true });
             summary.largest.slice(0, 8).forEach(function(e) {
@@ -1091,12 +1118,11 @@ FocusScope {
         if (overlay === "storage") {
             var rows = storageRows();
             var row = rows[panelIndex];
+            if (row && row.app) return row.app === "steam" ? "Manage Steam installs in DroidDeck. No download is started here." : "Browse and manage your files in the Files app.";
             var evidence = row && row.entry ? { known: 1, unknown: 0, oldest: row.entry.sizeObservedAt, newest: row.entry.sizeObservedAt, undated: row.entry.sizeObservedAt === null ? 1 : 0 }
                          : row && row.evidence ? row.evidence : Lib.storageSummary(rawEntries);
-            return "Observed ROM file bytes only. " + evidence.known + " known · " + evidence.unknown + " unknown. "
-                 + captureText(evidence.oldest, evidence.newest)
-                 + (evidence.oldest !== null && evidence.undated ? " " + evidence.undated + " capture dates unknown." : "")
-                 + " Not current disk usage or free space.";
+            return evidence.known + " known file sizes · " + evidence.unknown + " unknown. "
+                 + "Bars compare known ROM files, separately from filesystem capacity. " + captureText(evidence.oldest, evidence.newest);
         }
         if (overlay === "appearance") {
             var msg = device && device.sync.message ? " " + device.sync.message : "";
@@ -1119,6 +1145,9 @@ FocusScope {
             var member = discTarget && discTarget.discMembers[i];
             if (member && member.launchable && !member.game.missing) playEdition(member);
             else say("This disc isn't set up here. No game was launched.");
+        } else if (overlay === "storage") {
+            var row = storageRows()[i];
+            if (row && row.app) { var app = storageApp(row.app); if (app) playEdition(app); }
         } else if (overlay === "settings") {
             settingsIndex = i;
             if (i === 0) openPanel("appearance", 0);
@@ -1137,12 +1166,18 @@ FocusScope {
     }
 
     function hints() {
+        if (overlay === "facts") return [{ k: kCancel, l: "Back", a: "close" }];
         if (overlay === "discs") {
             var member = discTarget && discTarget.discMembers[panelIndex];
             return [{ k: kAccept, l: member && member.launchable && !member.game.missing ? "Play disc" : "Unavailable", a: "panel" }, { k: kCancel, l: "Back", a: "close" }];
         }
         if (overlay === "settings") return [{ k: kAccept, l: panelIndex === 1 ? "Sync now" : "Open", a: "panel" }, { k: kCancel, l: "Back", a: "close" }];
-        if (overlay === "storage" || overlay === "controls" || overlay === "refresh")
+        if (overlay === "storage") {
+            var row = storageRows()[panelIndex];
+            return (row && row.app ? [{ k: kAccept, l: "Open", a: "panel" }] : [])
+                .concat([{ k: "↑ ↓", l: "Browse", a: "read" }, { k: kCancel, l: "Back", a: "close" }]);
+        }
+        if (overlay === "controls" || overlay === "refresh")
             return [{ k: "↑ ↓", l: "Read", a: "read" }, { k: kCancel, l: "Back", a: "close" }];
         if (overlay === "appearance" || overlay === "filters") {
             var p = [{ k: kAccept, l: "Change", a: "panel" }];
@@ -1237,6 +1272,14 @@ FocusScope {
             return;
         }
 
+        if (overlay === "facts") {
+            event.accepted = true;
+            if (k.isCancel(event) || k.isDetails(event)) closeOverlay();
+            else if (k.isUp(event)) detailFlick.contentY = Math.max(0, detailFlick.contentY - px(120));
+            else if (k.isDown(event)) detailFlick.contentY = Math.max(0, Math.min(detailFlick.contentHeight - detailFlick.height, detailFlick.contentY + px(120)));
+            else event.accepted = false;
+            return;
+        }
         if (overlay === "details") {
             event.accepted = true;
             var n = detailActions().length;
@@ -1405,15 +1448,17 @@ FocusScope {
         visible: overlay === ""
 
         Row {
-            spacing: px(40)
+            spacing: px(28)
             Repeater {
                 model: root.views.map(function(v) { return root.viewNames[v]; })
                 delegate: Item {
-                    width: navLabel.implicitWidth
+                    width: navLabel.implicitWidth + px(32)
                     height: nav.height
                     readonly property bool active: root.views[index] === root.view
+                    Icon { name: root.views[index]; width: px(22); height: width; ink: parent.active ? root.ink : root.quiet; y: px(5) }
                     Text {
                         id: navLabel
+                        x: px(32)
                         text: modelData
                         color: parent.active ? root.ink : root.quiet
                         font.family: root.sans
@@ -1440,10 +1485,12 @@ FocusScope {
 
         Item {
             anchors.right: parent.right
-            width: lookLabel.implicitWidth
+            width: lookLabel.implicitWidth + px(30)
             height: nav.height
+            Icon { name: "settings"; width: px(22); height: width; ink: root.quiet; y: px(5) }
             Text {
                 id: lookLabel
+                x: px(30)
                 text: "Settings"
                 color: root.quiet
                 font.family: root.sans
@@ -2338,8 +2385,9 @@ FocusScope {
 
     Item {
         id: details
+        objectName: "detailsSurface"
         anchors.fill: parent
-        visible: root.overlay === "details" && root.current !== null
+        visible: (root.overlay === "details" || root.overlay === "facts") && root.current !== null
 
         MouseArea { anchors.fill: parent }
 
@@ -2399,17 +2447,24 @@ FocusScope {
                     font.pixelSize: fs(24)
                     wrapMode: Text.Wrap
                 }
+                DeviceStates {
+                    visible: root.overlay === "details" && root.current && root.current.systemId !== "androidapps"
+                    entry: root.current; ink: root.ink; quiet: root.quiet; fontFamily: root.sans; size: fs(21)
+                }
                 Item { width: 1; height: px(8) }
                 Repeater {
-                    model: root.detailLines(root.current, root.personalRev)
-                    delegate: Text {
-                        width: parent.width
-                        text: modelData.t
-                        color: modelData.q ? root.quiet : root.ink
-                        font.family: root.sans
-                        font.pixelSize: modelData.q ? fs(24) : fs(26)
-                        wrapMode: Text.Wrap
-                        lineHeight: 1.12
+                    model: root.overlay === "facts" ? root.detailLines(root.current, root.personalRev) : root.overviewLines(root.current, root.personalRev)
+                    delegate: Item {
+                        width: parent.width; height: lineText.implicitHeight
+                        Icon { visible: root.overlay === "details"; name: modelData.icon || "info"; width: fs(24); height: width; ink: modelData.q ? root.quiet : root.ink }
+                        Text {
+                            id: lineText
+                            x: root.overlay === "details" ? fs(36) : 0
+                            width: parent.width - x
+                            text: modelData.t; color: modelData.q ? root.quiet : root.ink
+                            font.family: root.sans; font.pixelSize: modelData.q ? fs(24) : fs(26)
+                            wrapMode: Text.Wrap; lineHeight: 1.12
+                        }
                     }
                 }
             }
@@ -2441,10 +2496,20 @@ FocusScope {
             font.weight: Font.DemiBold
         }
 
+        CapacityBar {
+            id: diskCapacity
+            objectName: "diskCapacity"
+            x: px(64); y: panelHead.y + panelHead.height + px(28)
+            width: Math.min(root.width - px(128), px(860))
+            visible: root.overlay === "storage"
+            warning: root.light ? "#955100" : "#dca56a"
+            evidence: Lib.storageCapacity(root.rawEntries)
+            ink: root.ink; quiet: root.quiet; slab: root.slab; fontFamily: root.sans; size: fs(26)
+        }
         ListView {
             id: panelList
             x: px(64)
-            y: panelHead.y + panelHead.height + px(34)
+            y: root.overlay === "storage" ? diskCapacity.y + diskCapacity.height + px(20) : panelHead.y + panelHead.height + px(34)
             width: Math.min(root.width - px(128), px(860))
             height: Math.min(count * panel.rowH, Math.floor((root.height - px(300) - y) / panel.rowH) * panel.rowH)
             clip: true
@@ -2460,6 +2525,7 @@ FocusScope {
             delegate: Item {
                 width: panelList.width
                 height: panel.rowH
+                Rectangle { visible: root.overlay === "storage" && modelData.fraction !== undefined; x: px(24); y: parent.height - px(7); height: px(4); width: Math.max(0, (parent.width - px(24)) * (modelData.fraction || 0)); color: root.quiet }
                 readonly property bool isCurrent: index === root.panelIndex
                 Rectangle {
                     visible: parent.isCurrent
@@ -2653,7 +2719,7 @@ FocusScope {
         // Details: the actions themselves, one in focus.
         Row {
             spacing: px(36)
-            visible: root.overlay === "details"
+            visible: root.overlay === "details" || root.overlay === "facts"
             Repeater {
                 model: root.overlay === "details" ? root.detailActions() : []
                 delegate: Item {
