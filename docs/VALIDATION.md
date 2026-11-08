@@ -35,3 +35,26 @@ See [SESSION-WINDOWS.md](SESSION-WINDOWS.md). The real theme smoke covers label 
 ## Integrated local notebook
 
 `tools/smoke_notebook.py` drives the full theme with `demo/notebook/host.pro`, the actual native store and synthetic catalogue/input. Separate GUI processes reopen the same real disk notebook. It covers edit, screenshot selection, controller image marking, Home/Details return, dirty Back/History, conflict branches, clear/restore, legacy provenance, write refusal/retry, missing originals and corrupt metadata. Screenshots and action/footer containment are checked across dark/light, large text, wide and bottom-clearance profiles. `--absent` checks the optional context boundary. This is desktop Qt evidence; Android storage permissions, keyboard, physical touch/buttons and installed-app persistence remain separate gates.
+
+
+## Persistent Downloads — 8 November 2026
+
+The native Cloud suite passes 65 cases on each of Qt 5.15.10 and Qt 6.11.1 using
+synthetic payloads and loopback HTTP. New cases exercise FIFO batches, foreground
+loss with explicit resume, network interruption/recreation/Range, persisted and
+private queue records, stale writers, malformed/foreign/linked state, the 100-job
+limit and content identity changes before and after fetching details. Unqueue
+retains the partial payload and descriptor. Queue consent never survives restart.
+
+Twelve desktop Qt runs exercise empty, paused, blocked and active Downloads at
+1280×960 dark/standard, 960×720 light/large and 1600×900 dark/large. Each also runs
+the common controller-key routing harness: enqueue/start, mapped next-page route,
+pause, explicit retry, unqueue, empty Back and original Cloud selection. The older
+queue-less bridge path remains exercised. These are injected keys and synthetic
+records, not physical-controller or Android lifecycle evidence.
+
+The wider source suite passes 85 Node cases and 161 Python cases. The private
+combined Android candidate compiles, links and packages with the original signer;
+its binary manifest and five DEX files match the prior recovery build. Its external
+theme is paired separately. Build inclusion is not device installation, approval,
+background execution, safe cloud-save restoration or full dreamlist acceptance.

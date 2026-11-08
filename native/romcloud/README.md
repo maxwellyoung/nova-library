@@ -96,3 +96,35 @@ same-size corruption, a changed file or marker during verification, cancellation
 before and after hashing, and corruption in a later disc. They do not prove
 device permissions, actual ROM boot, server deployment or a cloud-memory-card
 restore.
+
+## Persistent Downloads queue
+
+With `queueVersion === 1`, the Cloud screen offers **Downloads** on the mapped
+next-page button (normally R1) and by touch. Starting a game download persists
+its queue entry first. While a download is running, other Cloud games can be
+added without interrupting it. Downloads offers explicit start/retry, pause,
+offline Play and Remove entry. Back returns to the exact Cloud selection;
+Remove entry changes queue metadata only and never deletes ROMs or saves.
+Older bridges retain direct downloads and hide the queue route.
+
+Queue records live in app-private `download-queue.json`. They contain at most
+100 jobs, a hashed origin/storage scope, pinned edition identities, titles and
+bounded state messages. They contain no tokens, server URLs or ROM paths.
+Writes are private, locked and atomic; a malformed, foreign, linked, oversized
+or externally changed queue is preserved rather than replaced. Queue failure
+does not disable the older direct-download API. Known content identities cannot
+be retargeted by refreshed metadata or a details response. A summary without
+file hashes is pinned once its checked descriptor arrives, before payload writes.
+
+Execution consent is deliberately not persisted. Reopening Library leaves the
+queue paused. The Android adapter permits a batch only while Qt reports Library
+active; leaving pauses it, and returning requires an explicit start. Other
+platforms must supply `RomCloudConfig.downloadWindow` or the queue cannot run.
+This foreground window does not prove emulator exit or idle and never permits
+cleanup. Downloads are sequential and each activation uses the existing
+space/checksum/playlist checks. A blocked job stops the batch for review.
+
+This is an on-device queue, without background execution, notifications or new
+permissions. It is not the planned household queue or automatic cloud-save sync.
+Android lifecycle, actual controller input, interruption/return and throughput
+remain physical-device gates; the host HTTP and QML tests do not establish them.

@@ -8,6 +8,18 @@
         property double progress: 0
         property string message: "Synthetic cloud; no network or games."
         property string called: ""
+        property int queueVersion: 0
+        property var downloads: []
+        property bool queueRunning: false
+        property string queueMessage: "Downloads are paused. Start when ready."
+        function enqueueDownload(id) {
+            called="enqueue:"+id;if(downloads.some(function(job){return job.id===id;}))return true;
+            var g=games.filter(function(game){return game.id===id;})[0];
+            downloads=downloads.concat([{id:id,title:g.title,platform:g.platform,system:g.system,cover:g.cover,bytes:g.bytes,state:"queued",installed:false,message:"Waiting in Downloads."}]);return true;
+        }
+        function startDownloads(id){called="start:"+id;queueRunning=true;busy=true;}
+        function pauseDownloads(){called="pause-queue";queueRunning=false;busy=false;}
+        function removeQueuedDownload(id){called="unqueue:"+id;downloads=downloads.filter(function(job){return job.id!==id;});return true;}
         property int catalogueVersion: 0
         property bool simulateAcceptedLaunch: false
         property bool launchChecking: false
@@ -75,6 +87,24 @@
             return {id:41,title:"Synthetic Cloud Adventure",system:"Super Nintendo",platform:"snes",bytes:524288,
                 installed:installed,partial:false,supported:true,cover:cover || "",observedAt:"2026-11-06T00:00:00Z",
                 editionId:"nova:cloud_"+scope+":41_"+revision,cloudKey:"cloud:"+scope+":41"};
+        }
+        function checkDownloadQueue(ui) {
+            var previous=window.romCloud,previousGames=syntheticCloud.games;
+            syntheticCloud.games=[cloudFixture(false,ui.rawEntries[0].art)];syntheticCloud.queueVersion=1;
+            syntheticCloud.downloads=[];syntheticCloud.busy=false;syntheticCloud.queueRunning=false;window.romCloud=syntheticCloud;
+            ui.overlay="cloud";var panel=findItem(ui,"cloudLibrary");panel.targetId=41;panel.selected=0;
+            panel.primary();require(syntheticCloud.called==="start:41" && syntheticCloud.downloads.length===1,"Cloud primary did not persist then start a queue job");
+            key(ui,Qt.Key_PageDown);require(panel.queueOpen,"mapped next-page did not open Downloads");
+            var queue=findItem(panel,"downloadQueue");require(queue.jobs.length===1,"Downloads lost the selected game's queue entry");
+            key(ui,Qt.Key_X);require(syntheticCloud.called==="pause-queue","Downloads Pause did not reach the native API");
+            key(ui,Qt.Key_Return);require(syntheticCloud.called==="start:41","Downloads did not explicitly resume the focused job");
+            syntheticCloud.busy=false;syntheticCloud.queueRunning=false;
+            key(ui,Qt.Key_Y);require(syntheticCloud.called==="unqueue:41" && syntheticCloud.downloads.length===0,"Remove entry did not unqueue the focused job");
+            key(ui,Qt.Key_Escape);require(!panel.queueOpen && panel.targetId===41 && panel.current.id===41 && ui.overlay==="cloud","Downloads Back lost its game origin");
+            key(ui,Qt.Key_PageDown);key(ui,Qt.Key_Escape);require(!panel.queueOpen,"empty Downloads could not return");
+            syntheticCloud.queueVersion=0;key(ui,Qt.Key_PageDown);require(!panel.queueOpen,"older bridge offered an unsupported queue");
+            ui.overlay="";syntheticCloud.games=previousGames;window.romCloud=previous;
+            console.log("NOVA_DOWNLOAD_QUEUE_PASS: enqueue/start, mapped Downloads, pause/retry/unqueue, empty Back and exact origin; older bridge retained");
         }
         function checkIntegratedCloud(ui) {
             var previousCloud=window.romCloud,previousBridge=window.deviceLibrary,previousGames=syntheticCloud.games;
@@ -297,7 +327,7 @@
                 require(themeLoader.status === Loader.Ready, "theme loader failed");
                 var ui=themeLoader.item;
                 checkRecorderLaunch(ui);
-                checkIntegratedCloud(ui);
+                checkIntegratedCloud(ui);checkDownloadQueue(ui);
                 checkPhoneAudio(ui);
                 var artComponent=Qt.createComponent("../theme/ArtView.qml");
                 require(artComponent.status === Component.Ready,"art component failed");
@@ -636,6 +666,16 @@
                         var phoneApp={};Object.keys(ui.rawEntries[0]).forEach(function(k){phoneApp[k]=ui.rawEntries[0][k];});
                         phoneApp.id="demo:phone-audio";phoneApp.systemId="androidapps";phoneApp.appPackage="io.github.jqssun.airplay";phoneApp.launchable=true;phoneApp.game={missing:false,launch:function(){}};
                         ui.rawEntries=ui.rawEntries.concat([phoneApp]);ui.rebuildPresentations();ui.overlay="";ui.switchView("apps");ui.openPanel("phoneaudio",0);
+                    } else if (screenshotSurface.indexOf("queue-")===0) {
+                        syntheticCloud.queueVersion=1;window.romCloud=syntheticCloud;
+                        var qg=cloudFixture(false,ui.rawEntries[0].art);syntheticCloud.games=[qg];
+                        syntheticCloud.downloads=screenshotSurface==="queue-empty"?[]:[
+                            {id:41,title:qg.title+" — The Long Journey and Its Second Chapter",system:qg.system,platform:qg.platform,cover:qg.cover,bytes:qg.bytes,state:screenshotSurface==="queue-active"?"active":screenshotSurface==="queue-blocked"?"blocked":"paused",installed:false,message:"The server's files changed. Retained files are kept; review before re-adding this game."},
+                            {id:42,title:"A game for tomorrow",system:"PlayStation",platform:"ps",cover:ui.rawEntries[1].art,bytes:734003200,state:"queued",installed:false},
+                            {id:43,title:"Downloaded and checked",system:"Super Nintendo",platform:"snes",cover:ui.rawEntries[2].art,bytes:1048576,state:"ready",installed:true}];
+                        syntheticCloud.queueRunning=screenshotSurface==="queue-active";syntheticCloud.busy=syntheticCloud.queueRunning;syntheticCloud.progress=0.34;
+                        syntheticCloud.message="Downloading Synthetic Cloud Adventure · files are checked before use.";
+                        ui.overlay="cloud";var queuePanel=findItem(ui,"cloudLibrary");queuePanel.targetId=0;queuePanel.queueOpen=true;
                     } else if (["cloud-library","cloud-install","cloud-details","cloud-home","download-resume","download-blocked","download-active","download-library"].indexOf(screenshotSurface)>=0) {
                         var recoverySurface=screenshotSurface.indexOf("download-")===0;
                         var cg=cloudFixture(!recoverySurface && screenshotSurface!=="cloud-install",ui.rawEntries[0].art);

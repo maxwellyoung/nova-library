@@ -18,6 +18,9 @@ Item {
     property string fontFamily: ""
     property real scale: Math.max(0.5, Math.min(width / 1280, height / 800))
     property int selected: 0
+    property bool queueOpen: false
+    readonly property bool queueAvailable: !!(cloud && cloud.queueVersion === 1 && typeof cloud.enqueueDownload === "function" && typeof cloud.startDownloads === "function")
+    readonly property bool currentQueued: { var jobs=queueAvailable ? cloud.downloads || [] : [];return !!current && jobs.some(function(job){return job.id===current.id;}); }
     property bool confirmRemove: false
     property int selectedIdentity: 0
     property bool cleanupOpen: false
@@ -74,12 +77,19 @@ Item {
         removalPreview=plan;removalTarget=highlighted;removalNotice="";confirmRemove=true;
     }
     function goBack() {
+        if(queueOpen){queueOpen=false;return;}
         if(confirmRemove)clearRemoval();
         else if(cleanupOpen){cleanupOpen=false;removalNotice="";}
         else closed();
     }
     function primary() {
-        if (!cloud || busy || setupRequired) return;
+        if (!cloud || setupRequired) return;
+        if(queueAvailable && !cleanupOpen && !confirmRemove && current && !current.installed && current.supported && !recoveryBlocked && !spaceBlocked) {
+            if(currentQueued){queueOpen=true;return;}
+            if(cloud.enqueueDownload(current.id) && !busy)cloud.startDownloads(current.id);
+            return;
+        }
+        if(busy)return;
         if (confirmRemove && removalTarget && removalPreview) {
             cloud.removeDownload(removalTarget.id,removalPreview.token);clearRemoval();
             if(cleanupOpen)openCleanup();
@@ -89,7 +99,9 @@ Item {
     }
     function handleKey(event) {
         if (!keyMap) return;
+        if(queueOpen){queueView.handleKey(event);return;}
         event.accepted = true;
+        if(queueAvailable && typeof keyMap.isNextPage === "function" && keyMap.isNextPage(event)){queueOpen=true;clearRemoval();return;}
         if (keyMap.isCancel(event)) goBack();
         else if (keyMap.isUp(event) || keyMap.isDown(event)) {
             var step=keyMap.isUp(event)?-1:1;
@@ -110,13 +122,24 @@ Item {
         if(visible && !cleanupOpen && cloud && current && typeof cloud.requestCover === "function") cloud.requestCover(current.id);
     }
     onVisibleChanged: {
-        if(!visible){clearRemoval();cleanupOpen=false;removalNotice="";}
+        if(!visible){queueOpen=false;clearRemoval();cleanupOpen=false;removalNotice="";}
         else if(cloud && current && typeof cloud.requestCover === "function")cloud.requestCover(current.id);
     }
     onGamesChanged: selected = Math.max(0, Math.min(selected, games.length - 1))
     onTargetIdChanged: {selected=0;clearRemoval();cleanupOpen=false;removalNotice="";}
+    Item {
+    anchors.fill:parent;visible:!panel.queueOpen
     Rectangle { anchors.fill: parent; color: panel.ground }
-    Text { textFormat: Text.PlainText; x: px(64); y: px(64); text: cleanupOpen ? "Make room for " + (current ? current.title : "a game") : targetId ? "Download details" : "Cloud library"; width: parent.width-px(128); elide: Text.ElideRight; color: ink; font.family: fontFamily; font.pixelSize: fs(40); font.weight: Font.DemiBold }
+    Text { textFormat: Text.PlainText; x: px(64); y: px(64); text: cleanupOpen ? "Make room for " + (current ? current.title : "a game") : targetId ? "Download details" : "Cloud library"; width: parent.width-px(queueAvailable && !cleanupOpen ? 360 : 128); elide: Text.ElideRight; color: ink; font.family: fontFamily; font.pixelSize: fs(40); font.weight: Font.DemiBold }
+    Item {
+        visible:queueAvailable && !cleanupOpen;x:parent.width-width-px(64);y:px(76);width:downloadsHint.implicitWidth;height:px(34)
+        Row {
+            id:downloadsHint;spacing:px(10)
+            KeyCap {label:Lib.keyLabel(keyMap?keyMap.nextPage:null,"R1");ink:panel.ink;ground:panel.ground;fontFamily:panel.fontFamily;textSize:panel.fs(21)}
+            Text {text:"Downloads";color:panel.ink;font.family:panel.fontFamily;font.pixelSize:panel.fs(24)}
+        }
+        MouseArea {anchors.fill:parent;anchors.margins:-panel.px(10);onClicked:{queueOpen=true;clearRemoval();}}
+    }
     Text { textFormat: Text.PlainText; x: px(64); y: px(122); width: parent.width-px(128); text: cleanupOpen ? "Cloud-managed downloads only. Save folders are not cleanup targets." : setupRequired ? "Your local library is available while Cloud is disconnected." : "Download here. Play offline. Keep your saves."; color: quiet; font.family: fontFamily; font.pixelSize: fs(22) }
     Text { textFormat: Text.PlainText; x: px(64); y: px(152); width: parent.width-px(128); text: spaceText(); color: quiet; font.family: fontFamily; font.pixelSize: fs(18); elide: Text.ElideRight }
     Item {
@@ -167,7 +190,7 @@ Item {
         objectName:"cloudHints"
         x: px(64); y: parent.height-px(76); spacing: px(30)
         Repeater {
-            model: [{key:kAccept,label:confirmRemove ? "Confirm removal" : cleanupOpen ? highlighted && highlighted.eligible ? "Review" : "Why protected" : current && current.installed ? "Play" : current && current.resumeAvailable ? "Resume" : current && current.partial ? "Check download" : "Download",action:"primary",enabled:!setupRequired && !busy && (confirmRemove || cleanupOpen && highlighted || current && (current.installed || current.supported && !spaceBlocked && !recoveryBlocked))},
+            model: [{key:kAccept,label:confirmRemove ? "Confirm removal" : cleanupOpen ? highlighted && highlighted.eligible ? "Review" : "Why protected" : current && current.installed ? "Play" : currentQueued ? "Downloads" : busy && queueAvailable ? "Queue" : current && current.resumeAvailable ? "Resume" : current && current.partial ? "Check download" : "Download",action:"primary",enabled:!setupRequired && (!busy || queueAvailable && !cleanupOpen && current && !current.installed) && (confirmRemove || cleanupOpen && highlighted || current && (current.installed || current.supported && !spaceBlocked && !recoveryBlocked))},
                 {key:kDetails,label:busy ? "Pause" : "Refresh",action:"refresh",enabled:cloud !== null && !setupRequired},
                 {key:kFilters,label:current && (current.installed || current.partial) ? "Review removal" : "Make room",action:"remove",enabled:!cleanupOpen && current && !busy && cloud && typeof cloud.removalPlan === "function"},
                 {key:kCancel,label:"Back",action:"back",enabled:true}]
@@ -187,5 +210,12 @@ Item {
                 } }
             }
         }
+    }
+    }
+    DownloadQueue {
+        id:queueView;anchors.fill:parent;visible:panel.queueOpen
+        cloud:panel.cloud;keyMap:panel.keyMap;ground:panel.ground;ink:panel.ink;slab:panel.slab;quiet:panel.quiet
+        textScale:panel.textScale;fontFamily:panel.fontFamily
+        onClosed:panel.queueOpen=false
     }
 }

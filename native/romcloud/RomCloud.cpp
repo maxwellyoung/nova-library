@@ -17,11 +17,14 @@
 #include <QTimer>
 #include <QDateTime>
 #include <QThread>
+#include <QLockFile>
+#include <QHash>
 #include <algorithm>
 #ifdef Q_OS_UNIX
 #include <sys/stat.h>
 #endif
 #ifdef Q_OS_ANDROID
+#include <QGuiApplication>
 #include <QAndroidJniObject>
 #include <QAndroidJniEnvironment>
 #endif
@@ -41,6 +44,7 @@ RomCloudConfig platformConfig() {
     auto o = QJsonDocument::fromJson(payload.toString().toUtf8()).object();
     c.endpoint = QUrl(o["endpoint"].toString()); c.token = o["token"].toString().toUtf8(); c.root = o["romRoot"].toString();
     c.cache = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/rom-cloud";
+    c.downloadWindow=[] { return QGuiApplication::applicationState()==Qt::ApplicationActive; };
 #endif
     return c;
 }
@@ -152,7 +156,11 @@ QVariantMap RomCloud::validateGame(const QVariantMap& source) {
 RomCloud::RomCloud(QObject* parent) : RomCloud(platformConfig(), parent) {}
 RomCloud::RomCloud(const RomCloudConfig& config, QObject* parent) : QObject(parent), m_config(config) {
     if (!allowedEndpoint(config.endpoint) || config.token.isEmpty() || config.token.size() > 8192 || config.token.contains('\n') || config.token.contains('\r') || !QDir::isAbsolutePath(config.root) || QDir::cleanPath(config.root) == "/" || !QDir::isAbsolutePath(config.cache) || config.root.split('/').contains("..")) { m_config = {}; return; }
-    QDir().mkpath(config.cache); loadCache(); m_message = "Cloud library ready. Refresh to check for games.";
+    QDir().mkpath(config.cache); loadCache();loadQueue(); m_message = "Cloud library ready. Refresh to check for games.";
+#ifdef Q_OS_ANDROID
+    if(auto app=qobject_cast<QGuiApplication*>(QCoreApplication::instance()))
+        connect(app,&QGuiApplication::applicationStateChanged,this,[this]{reevaluateDownloadWindow();});
+#endif
 }
 RomCloud::~RomCloud() { if(m_verifier)m_verifier->requestInterruption(); }
 QString RomCloud::gamePath(int id) const { return m_config.root + "/nova-cloud/" + QString::number(id); }
@@ -250,6 +258,143 @@ QString RomCloud::editionIdentity(const QUrl& endpoint, const QVariantMap& game)
     const auto revision=QCryptographicHash::hash(content,QCryptographicHash::Sha256).toHex();
     return "nova:cloud_"+QString::fromLatin1(scope)+":"+QString::number(game["id"].toInt())+"_"+QString::fromLatin1(revision);
 }
+QString RomCloud::queueScope() const {
+    return QString::fromLatin1(QCryptographicHash::hash(originBytes(m_config.endpoint)+"\n"+QDir::cleanPath(m_config.root).toUtf8(),QCryptographicHash::Sha256).toHex());
+}
+int RomCloud::queueIndex(int id) const {
+    for(int i=0;i<m_downloads.size();++i)if(m_downloads[i].toMap()["id"].toInt()==id)return i;
+    return -1;
+}
+QVariantMap RomCloud::queueGame(int id) const {
+    for(const auto& raw:m_games)if(raw.toMap()["id"].toInt()==id)return raw.toMap();
+    return {};
+}
+void RomCloud::loadQueue() {
+    const auto path=m_config.cache+"/download-queue.json";QFileInfo info(path);
+    if(!info.exists() && !info.isSymLink())return;
+    const auto invalid=[this]{m_queueReadable=false;m_queueMessage="Saved downloads need review. The queue file was kept unchanged.";};
+    if(info.isSymLink() || fileIdentity(path).isEmpty() || info.size()>256*1024)return invalid();
+#ifdef Q_OS_UNIX
+    struct stat st;if(::lstat(QFile::encodeName(path).constData(),&st) || st.st_nlink!=1)return invalid();
+#endif
+    QFile f(path);if(!f.open(QIODevice::ReadOnly))return invalid();const auto bytes=f.readAll();
+    const auto doc=QJsonDocument::fromJson(bytes);if(!doc.isObject())return invalid();const auto o=doc.object();
+    if(o.size()!=3 || !o["schema"].isDouble() || o["schema"].toDouble()!=1 || !o["scope"].isString() || o["scope"].toString()!=queueScope() || !o["jobs"].isArray() || o["jobs"].toArray().size()>100)return invalid();
+    QVariantList jobs;QSet<int> ids;
+    const auto origin=QString::fromLatin1(QCryptographicHash::hash(originBytes(m_config.endpoint),QCryptographicHash::Sha256).toHex());
+    for(const auto& raw:o["jobs"].toArray()) {
+        if(!raw.isObject())return invalid();const auto j=raw.toObject();const double number=j["id"].toDouble();
+        if(j.size()!=5 || !j["id"].isDouble() || number<1 || number>2147483647 || number!=double(int(number)) || ids.contains(int(number)))return invalid();
+        for(const auto& key:{"editionId","title","state","message"})if(!j[key].isString())return invalid();
+        const auto edition=j["editionId"].toString(),prefix="nova:cloud_"+origin+":"+QString::number(int(number))+"_";
+        if(!edition.isEmpty() && (!edition.startsWith(prefix) || edition.size()!=prefix.size()+64 || !QRegularExpression("^[a-f0-9]{64}$").match(edition.mid(prefix.size())).hasMatch()))return invalid();
+        const auto title=j["title"].toString(),state=j["state"].toString(),message=j["message"].toString();
+        if(title.trimmed().isEmpty() || title.size()>300 || message.size()>400 || QRegularExpression("[\\x00-\\x1f]").match(title+message).hasMatch()
+            || !QStringList{"queued","active","paused","blocked","ready"}.contains(state))return invalid();
+        auto job=j.toVariantMap();if(state=="active"){job["state"]="paused";job["message"]="Interrupted by restart. Resume when ready.";}
+        ids.insert(int(number));jobs.append(job);
+    }
+    m_downloads=jobs;m_queueFingerprint=QCryptographicHash::hash(bytes,QCryptographicHash::Sha256);
+}
+bool RomCloud::saveQueue(const QVariantList& jobs) {
+    if(!m_queueReadable || m_config.token.isEmpty())return false;
+    const auto path=m_config.cache+"/download-queue.json";
+    const auto refuse=[this]{m_queueReadable=false;m_queueRunning=false;m_queueMessage="Saved downloads changed or could not be written. Files were kept; restart Library to review the queue.";emit queueChanged();return false;};
+    if(QFileInfo(m_config.cache).isSymLink() || QFileInfo(path).isSymLink() || QFileInfo(path+".lock").isSymLink())return refuse();
+    QLockFile lock(path+".lock");lock.setStaleLockTime(0);if(!lock.tryLock(0))return refuse();
+    QByteArray current;QFile existing(path);
+    if(QFileInfo::exists(path)) {
+#ifdef Q_OS_UNIX
+        struct stat st;if(::lstat(QFile::encodeName(path).constData(),&st) || !S_ISREG(st.st_mode) || st.st_nlink!=1)return refuse();
+#endif
+        if(!existing.open(QIODevice::ReadOnly) || existing.size()>256*1024)return refuse();current=existing.readAll();
+    } else if(!m_queueFingerprint.isEmpty())return refuse();
+    const auto fingerprint=existing.isOpen()?QCryptographicHash::hash(current,QCryptographicHash::Sha256):QByteArray();
+    if(fingerprint!=m_queueFingerprint || jobs.size()>100)return refuse();
+    const auto bytes=QJsonDocument::fromVariant(QVariantMap{{"schema",1},{"scope",queueScope()},{"jobs",jobs}}).toJson(QJsonDocument::Compact);
+    if(bytes.size()>256*1024)return refuse();QSaveFile f(path);
+    if(!f.open(QIODevice::WriteOnly) || !f.setPermissions(QFileDevice::ReadOwner|QFileDevice::WriteOwner))return refuse();
+    if(f.write(bytes)!=bytes.size() || !f.commit())return refuse();
+    m_queueFingerprint=QCryptographicHash::hash(bytes,QCryptographicHash::Sha256);m_downloads=jobs;return true;
+}
+QVariantList RomCloud::downloads() const {
+    QHash<int,QVariantMap> cached;for(const auto& raw:m_games)cached.insert(raw.toMap()["id"].toInt(),raw.toMap());
+    QVariantList out;
+    for(const auto& raw:m_downloads) {
+        auto job=raw.toMap();const int id=job["id"].toInt();const auto game=cached.value(id),marker=installedManifest(id);
+        const bool ready=!marker.isEmpty() && (job["editionId"].toString().isEmpty() || job["editionId"].toString()==editionIdentity(m_config.endpoint,marker));
+        if(ready)job["state"]="ready";
+        else if(job["state"]=="ready"){job["state"]="blocked";job["message"]="Downloaded files are unavailable. Retry checks the current copy.";}
+        job["installed"]=ready;job["system"]=game["system"];job["platform"]=game["platform"];job["bytes"]=game["bytes"];
+        const auto cover=m_config.cache+"/covers/"+QString::number(id)+".img";
+        job["cover"]=QFileInfo(cover).isFile() && !QFileInfo(cover).isSymLink()?QUrl::fromLocalFile(cover).toString():QString();out.append(job);
+    }
+    return out;
+}
+bool RomCloud::enqueueDownload(int id) {
+    if(!m_queueReadable || m_config.token.isEmpty())return false;
+    if(queueIndex(id)>=0)return true;
+    const auto game=queueGame(id);
+    if(!game["supported"].toBool() || ownedInstalled(id) || m_downloads.size()>=100) {
+        m_queueMessage=m_downloads.size()>=100?"Queue is full. Remove finished entries to add another game.":"This game cannot be added to Downloads.";emit queueChanged();return false;
+    }
+    auto jobs=m_downloads;auto title=game["title"].toString().replace(QRegularExpression("[\\x00-\\x1f]")," ").left(300);
+    jobs.append(QVariantMap{{"id",id},{"editionId",game["needsDetails"].toBool()?QString():editionIdentity(m_config.endpoint,game)},
+        {"title",title},{"state","queued"},{"message","Waiting in Downloads."}});
+    if(!saveQueue(jobs))return false;m_queueMessage="Added to Downloads. Start when ready.";emit queueChanged();emit changed();return true;
+}
+void RomCloud::startDownloads(int firstId) {
+    if(!m_queueReadable || m_queueActiveId || m_config.token.isEmpty())return;
+    if(m_busy){m_queueMessage="Wait for the current check, or pause it before starting Downloads.";emit queueChanged();return;}
+    if(!m_config.downloadWindow || !m_config.downloadWindow()){m_queueMessage="Return to Library to start Downloads. A foreground window is required.";emit queueChanged();return;}
+    if(firstId) {
+        const int i=queueIndex(firstId);if(i<0)return;auto jobs=m_downloads;auto job=jobs[i].toMap();
+        job["state"]="queued";job["message"]="Queued for an explicit retry.";jobs[i]=job;if(!saveQueue(jobs))return;
+    }
+    m_queuePreferredId=firstId;m_queueRunning=true;m_queueMessage="Starting Downloads…";emit queueChanged();
+    QTimer::singleShot(0,this,[this]{pumpDownloads();});
+}
+void RomCloud::pauseDownloads() {
+    m_queueRunning=false;m_queueMessage="Downloads paused. Retained files are kept.";
+    if(m_queueActiveId && m_busy){m_queuePauseRequested=true;cancel();}
+    emit queueChanged();
+}
+void RomCloud::reevaluateDownloadWindow() {
+    if(m_queueRunning && (!m_config.downloadWindow || !m_config.downloadWindow())) {
+        pauseDownloads();m_queueMessage="Downloads paused while Library is away. Resume when ready.";emit queueChanged();
+    }
+}
+bool RomCloud::removeQueuedDownload(int id) {
+    if(id==m_queueActiveId){m_queueMessage="Pause this download before removing its queue entry.";emit queueChanged();return false;}
+    const int i=queueIndex(id);if(i<0)return false;auto jobs=m_downloads;jobs.removeAt(i);if(!saveQueue(jobs))return false;
+    m_queueMessage="Removed from Downloads. ROM and save files were not deleted.";emit queueChanged();emit changed();return true;
+}
+void RomCloud::pumpDownloads() {
+    if(!m_queueRunning || !m_queueReadable || m_busy || m_queueActiveId)return;
+    if(!m_config.downloadWindow || !m_config.downloadWindow()){pauseDownloads();return;}
+    int index=m_queuePreferredId?queueIndex(m_queuePreferredId):-1;m_queuePreferredId=0;
+    if(index<0)for(int i=0;i<m_downloads.size();++i)if(QStringList{"queued","paused"}.contains(m_downloads[i].toMap()["state"].toString())){index=i;break;}
+    if(index<0){m_queueRunning=false;m_queueMessage="No queued downloads to start. Ready games can be played offline.";emit queueChanged();return;}
+    auto jobs=m_downloads;auto job=jobs[index].toMap();const int id=job["id"].toInt();const auto game=queueGame(id),marker=installedManifest(id);
+    if(!marker.isEmpty() && (job["editionId"].toString().isEmpty() || job["editionId"]==editionIdentity(m_config.endpoint,marker))) {
+        job["state"]="ready";job["message"]="Downloaded copy is available.";jobs[index]=job;if(!saveQueue(jobs))return;
+        emit queueChanged();QTimer::singleShot(0,this,[this]{pumpDownloads();});return;
+    }
+    if(!game["supported"].toBool() || (!game["needsDetails"].toBool() && !job["editionId"].toString().isEmpty() && job["editionId"]!=editionIdentity(m_config.endpoint,game))) {
+        job["state"]="blocked";job["message"]="Catalogue content changed or is unavailable. Files were kept; review before re-adding this game.";jobs[index]=job;
+        m_queueRunning=false;if(saveQueue(jobs))m_queueMessage=job["message"].toString();emit queueChanged();emit changed();return;
+    }
+    if(job["editionId"].toString().isEmpty() && !game["needsDetails"].toBool())job["editionId"]=editionIdentity(m_config.endpoint,game);
+    job["state"]="active";job["message"]="Downloading; files are checked before use.";jobs[index]=job;if(!saveQueue(jobs))return;
+    m_queueActiveId=id;m_queuePauseRequested=false;m_queueMessage="Downloading "+job["title"].toString();emit queueChanged();install(id);
+}
+void RomCloud::finishQueuedDownload(bool success,const QString& message) {
+    const int index=queueIndex(m_queueActiveId);if(index<0){m_queueActiveId=0;m_queueRunning=false;return;}
+    auto jobs=m_downloads;auto job=jobs[index].toMap();job["state"]=success?"ready":m_queuePauseRequested?"paused":"blocked";
+    job["message"]=message.simplified().left(400);jobs[index]=job;m_queueActiveId=0;
+    if(!success)m_queueRunning=false;if(saveQueue(jobs))m_queueMessage=message;m_queuePauseRequested=false;
+    emit queueChanged();if(m_queueRunning)QTimer::singleShot(0,this,[this]{pumpDownloads();});
+}
 QVariantList RomCloud::games() const {
     auto result = m_games;
     for (auto& raw : result) {
@@ -299,9 +444,14 @@ QNetworkRequest RomCloud::request(const QString& path) const {
 #endif
     return req;
 }
-void RomCloud::fail(const QString& message) { m_file.close(); m_busy=false; m_launchChecking=false; m_message=message; m_reply=nullptr; emit changed(); }
+void RomCloud::fail(const QString& message) {
+    m_file.close();m_busy=false;m_launchChecking=false;m_message=message;m_reply=nullptr;
+    if(m_queueActiveId)finishQueuedDownload(false,message);
+    emit changed();
+}
 void RomCloud::refresh() {
     if (m_busy) return;
+    if(m_queueRunning)pauseDownloads();
     if (m_config.token.isEmpty()) { m_message="Connect a private ROM library first."; emit changed(); return; }
     m_installId=0;m_coverTried.clear(); m_pending.clear(); m_progress=0; m_busy=true; m_cancelled=false; m_message="Checking your cloud library…"; emit changed(); page(0);
 }
@@ -381,12 +531,30 @@ QVariantMap RomCloud::installPlan(int id) const {
 }
 void RomCloud::install(int id) {
     if(m_busy || m_config.token.isEmpty()) return;
+    if(m_queueRunning && !m_queueActiveId)pauseDownloads();
+    if(m_queueActiveId) {
+        if(id!=m_queueActiveId)return;
+        if(m_queuePauseRequested || !m_config.downloadWindow || !m_config.downloadWindow()) {
+            m_queuePauseRequested=true;return fail("Downloads paused while Library is away. Resume when ready.");
+        }
+    }
     QVariantMap game; for(const auto& g:m_games) if(g.toMap()["id"].toInt()==id) game=g.toMap();
     if(game["needsDetails"].toBool()) {
         const auto recovery=partialPlan(game);if(recovery["blocked"].toBool())return fail(recovery["reason"].toString());
         details(id);return;
     }
     if(!game["supported"].toBool()) return fail(game.value("reason","Game not available.").toString());
+    if(m_queueActiveId) {
+        const int index=queueIndex(id);if(index<0)return fail("Saved download entry is unavailable. Files were kept.");
+        auto jobs=m_downloads;auto job=jobs[index].toMap();const auto identity=editionIdentity(m_config.endpoint,game);
+        if(!job["editionId"].toString().isEmpty() && job["editionId"].toString()!=identity)
+            return fail("Catalogue content changed. Files were kept; review before re-adding this game.");
+        if(job["editionId"].toString().isEmpty()) {
+            job["editionId"]=identity;jobs[index]=job;
+            if(!saveQueue(jobs))return fail("Could not retain this download's content identity. Nothing was downloaded.");
+            emit queueChanged();
+        }
+    }
     if(ownedInstalled(id)) return fail("Already downloaded.");
     if(!safeDirectory(m_config.root,true)) return fail("The selected storage is unavailable.");
     const auto plan=installPlan(id);m_total=game["bytes"].toLongLong();
@@ -414,6 +582,9 @@ void RomCloud::verify(const QString& path, const QByteArray& hash, const std::fu
     worker->start();
 }
 void RomCloud::nextFile() {
+    if(m_queueActiveId && (m_queuePauseRequested || !m_config.downloadWindow || !m_config.downloadWindow())) {
+        m_queuePauseRequested=true;return fail("Downloads paused while Library is away. Resume when ready.");
+    }
     const auto folder=gamePath(m_installId)+".partial";
     if(!safeDirectory(folder)) return fail("Download storage was removed.");
     QVariantMap active;for(const auto& raw:m_games)if(raw.toMap()["id"].toInt()==m_installId)active=raw.toMap();
@@ -430,7 +601,9 @@ void RomCloud::nextFile() {
         }
         QVariantMap marker{{"id",m_installId},{"endpoint",m_config.endpoint.toString()},{"files",m_files},{"entry",game["entry"]},{"platform",game["platform"]}};
         if(!writeJson(folder+"/.nova-install.json",marker) || !QDir().rename(folder,gamePath(m_installId))) return fail("Could not finish installation; partial files retained.");
-        m_progress=1; m_busy=false; m_reply=nullptr; m_message="Download complete. Files checked. Cloud saves are not enabled in this build.";emit changed();return;
+        m_progress=1; m_busy=false; m_reply=nullptr; m_message="Download complete. Files checked. Cloud saves are not enabled in this build.";
+        if(m_queueActiveId)finishQueuedDownload(true,"Download complete. Files checked; ready to play offline.");
+        emit queueChanged();emit changed();return;
     }
     auto f=m_files[m_fileIndex].toMap(); const auto path=folder+"/"+f["name"].toString(); const auto size=f["bytes"].toLongLong(); const auto hash=f["hash"].toByteArray();
     QFileInfo info(path); if(info.isSymLink() || (info.exists()&&!info.isFile())) return fail("Unsafe partial file; nothing replaced.");
@@ -460,7 +633,11 @@ void RomCloud::nextFile() {
         verify(path,hash,[this,size](bool valid){if(!valid)return fail("Checksum failed. Partial files retained; installation was not activated.");m_completed+=size;++m_fileIndex;nextFile();});
     });
 }
-void RomCloud::cancel() { if(!m_busy)return; m_cancelled=true;if(m_verifier)m_verifier->requestInterruption();if(m_reply)m_reply->abort(); }
+void RomCloud::cancel() {
+    if(!m_busy)return;
+    if(m_queueActiveId){m_queuePauseRequested=true;m_queueRunning=false;}
+    m_cancelled=true;if(m_verifier)m_verifier->requestInterruption();if(m_reply)m_reply->abort();
+}
 QVariantMap RomCloud::inspectRemoval(int id, const QString& path, bool partial) const {
     QVariantMap out{{"id",id},{"partial",partial},{"eligible",false},{"bytesKnown",false}};
     auto blocked=[&out](const QString& reason){out["reason"]=reason;return out;};
@@ -574,6 +751,7 @@ void RomCloud::removeDownload(int id, const QString& previewToken) {
 }
 void RomCloud::play(int id) {
     if(m_busy)return;
+    if(m_queueRunning)pauseDownloads();
     const auto marker=installedManifest(id);
     if(marker.isEmpty())return fail("This download is incomplete or its file record changed. Files were kept; review the download before playing.");
     const auto path=gamePath(id);
