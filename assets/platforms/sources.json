@@ -1,0 +1,165 @@
+{
+  "gc": {
+    "file": "gc.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/3fd92a7d0656c3d780bccdf7b5a3e9b9991dd6e5/icons/nintendogamecube.svg",
+    "sha256": "e814c1972fdcdd175e35268d633ec0fa61d1d077ea463ea9cef993186d939d19",
+    "collection": "Simple Icons 13.21.0",
+    "license": "CC0-1.0; brand rights separate"
+  },
+  "psx": {
+    "file": "psx.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/3fd92a7d0656c3d780bccdf7b5a3e9b9991dd6e5/icons/playstation.svg",
+    "sha256": "b68b4d7b63443759b9c4d77a5501c5758eeae06a6d594d278d5eb6cb4d3dbbe4",
+    "collection": "Simple Icons 13.21.0",
+    "license": "CC0-1.0; brand rights separate"
+  },
+  "ps2": {
+    "file": "ps2.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/3fd92a7d0656c3d780bccdf7b5a3e9b9991dd6e5/icons/playstation2.svg",
+    "sha256": "bd7ec57325783d8a16794051ac76a658ab7889b3f8fa10d5e82e9348625026fc",
+    "collection": "Simple Icons 13.21.0",
+    "license": "CC0-1.0; brand rights separate"
+  },
+  "ps3": {
+    "file": "ps3.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/3fd92a7d0656c3d780bccdf7b5a3e9b9991dd6e5/icons/playstation3.svg",
+    "sha256": "f12a89c3848aa43bb761c944302187cc912c3dcc432eb74fa2f61e4b23da7b68",
+    "collection": "Simple Icons 13.21.0",
+    "license": "CC0-1.0; brand rights separate"
+  },
+  "psp": {
+    "file": "psp.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/3fd92a7d0656c3d780bccdf7b5a3e9b9991dd6e5/icons/playstationportable.svg",
+    "sha256": "ae260cfc962463d2e15690201c12d69d6e2e9e26f284e1abff9490a6ca2b5d62",
+    "collection": "Simple Icons 13.21.0",
+    "license": "CC0-1.0; brand rights separate"
+  },
+  "vita": {
+    "file": "vita.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/3fd92a7d0656c3d780bccdf7b5a3e9b9991dd6e5/icons/playstationvita.svg",
+    "sha256": "0043e493ac837a07c527ccc3d909103c225f8ea5bfaba0d4fbeaeffa91e178b3",
+    "collection": "Simple Icons 13.21.0",
+    "license": "CC0-1.0; brand rights separate"
+  },
+  "nds": {
+    "file": "nds.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/3fd92a7d0656c3d780bccdf7b5a3e9b9991dd6e5/icons/nintendods.svg",
+    "sha256": "a30d6800bbbacc7b163641254216f0d51f376909a7ffdd7fe6ac9955b02d4ef2",
+    "collection": "Simple Icons 13.21.0",
+    "license": "CC0-1.0; brand rights separate"
+  },
+  "n3ds": {
+    "file": "n3ds.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/3fd92a7d0656c3d780bccdf7b5a3e9b9991dd6e5/icons/nintendo3ds.svg",
+    "sha256": "ce1716bd9989b386ebee165ca5a385580369d9efe87698fde074acdc0ec2fadc",
+    "collection": "Simple Icons 13.21.0",
+    "license": "CC0-1.0; brand rights separate"
+  },
+  "switch": {
+    "file": "switch.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/3fd92a7d0656c3d780bccdf7b5a3e9b9991dd6e5/icons/nintendoswitch.svg",
+    "sha256": "3acd3fb0b576ed59bf319047ba487e4866ebeb9275509f6dd47568d4dcdf2586",
+    "collection": "Simple Icons 13.21.0",
+    "license": "CC0-1.0; brand rights separate"
+  },
+  "xbox": {
+    "file": "xbox.svg",
+    "source": "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/af620534bfc3c2d4cbefcfeec29603bbe7809e64/svgs/brands/xbox.svg",
+    "sha256": "d679749e9e428c9cd295a4b4d23fcc4ca6ea98248a4416a69c412f398e11bba9",
+    "collection": "Font Awesome Free 6.7.2 by Fonticons, Inc.",
+    "license": "CC-BY-4.0"
+  },
+  "wii": {
+    "file": "wii.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/3fd92a7d0656c3d780bccdf7b5a3e9b9991dd6e5/icons/wii.svg",
+    "sha256": "dd898ba287199bd57b97d0171a7835a784ac608b90669279cde19761631451c1",
+    "collection": "Simple Icons 13.21.0",
+    "license": "CC0-1.0; brand rights separate"
+  },
+  "wiiu": {
+    "file": "wiiu.svg",
+    "source": "https://raw.githubusercontent.com/simple-icons/simple-icons/3fd92a7d0656c3d780bccdf7b5a3e9b9991dd6e5/icons/wiiu.svg",
+    "sha256": "255a15bcc37cd2e86149482b34f29f2234fa45f1bc5ec639e049dd66dc17fa1b",
+    "collection": "Simple Icons 13.21.0",
+    "license": "CC0-1.0; brand rights separate"
+  },
+  "pc": {
+    "file": "pc-retroarch.svg",
+    "source": "https://raw.githubusercontent.com/libretro/retroarch-assets/d9f969054dc7fbb6fa89519036d2b971e0855b51/src/xmb/monochrome/IBM%20-%20PC%20and%20Compatibles.svg",
+    "sha256": "fc2e2e1cd2ffb8fcce05dcec94a9fd51810b45499e5501df834492fdf37703e5",
+    "collection": "RetroArch assets Monochrome · d9f969054dc7fbb6fa89519036d2b971e0855b51",
+    "license": "CC-BY-4.0; brand rights separate",
+    "parser": "svg-shapes"
+  },
+  "n64": {
+    "file": "n64-retroarch.svg",
+    "source": "https://raw.githubusercontent.com/libretro/retroarch-assets/d9f969054dc7fbb6fa89519036d2b971e0855b51/src/xmb/monochrome/Nintendo%20-%20Nintendo%2064.svg",
+    "sha256": "21fde90d4c5bd4351b1d391962319f54bcffd57263db3c39b73fe135ec0ccc2e",
+    "collection": "RetroArch assets Monochrome · d9f969054dc7fbb6fa89519036d2b971e0855b51",
+    "license": "CC-BY-4.0; brand rights separate",
+    "parser": "svg-shapes"
+  },
+  "ds-hardware": {
+    "file": "ds-hardware-retroarch.svg",
+    "source": "https://raw.githubusercontent.com/libretro/retroarch-assets/d9f969054dc7fbb6fa89519036d2b971e0855b51/src/xmb/monochrome/Nintendo%20-%20Nintendo%20DS.svg",
+    "sha256": "b013699eb1d12960359d69ecd1d98837b0104e03d7f1e63d07fe233d7845e68f",
+    "collection": "RetroArch assets Monochrome · d9f969054dc7fbb6fa89519036d2b971e0855b51",
+    "license": "CC-BY-4.0; brand rights separate",
+    "parser": "svg-shapes"
+  },
+  "consoles": {
+    "file": "consoles-gamepad.svg",
+    "source": "https://raw.githubusercontent.com/FortAwesome/Font-Awesome/af620534bfc3c2d4cbefcfeec29603bbe7809e64/svgs/solid/gamepad.svg",
+    "sha256": "6dd998edf2f021cfab4ea90c767f3eb306bc32377ea0d9f9f3a95aff3967a1d9",
+    "collection": "Font Awesome Free 6.7.2 by Fonticons, Inc.",
+    "license": "CC-BY-4.0"
+  },
+  "snes": {
+    "file": "snes-retroarch.svg",
+    "source": "https://raw.githubusercontent.com/libretro/retroarch-assets/d9f969054dc7fbb6fa89519036d2b971e0855b51/src/xmb/monochrome/Nintendo%20-%20Super%20Nintendo%20Entertainment%20System.svg",
+    "sha256": "ce183526f75b6e4ef6f07e9b39932597a199c35a2c49ee9d9b84df87c6ec7ff8",
+    "collection": "RetroArch assets Monochrome · d9f969054dc7fbb6fa89519036d2b971e0855b51",
+    "license": "CC-BY-4.0; brand rights separate",
+    "parser": "svg-shapes"
+  },
+  "nes": {
+    "file": "nes-retroarch.svg",
+    "source": "https://raw.githubusercontent.com/libretro/retroarch-assets/d9f969054dc7fbb6fa89519036d2b971e0855b51/src/xmb/monochrome/Nintendo%20-%20Nintendo%20Entertainment%20System.svg",
+    "sha256": "19b062e92a19a47ded39c29313d3c771b496543ddd2c6143099b4fac951f05eb",
+    "collection": "RetroArch assets Monochrome · d9f969054dc7fbb6fa89519036d2b971e0855b51",
+    "license": "CC-BY-4.0; brand rights separate",
+    "parser": "svg-shapes"
+  },
+  "gb": {
+    "file": "gb-retroarch.svg",
+    "source": "https://raw.githubusercontent.com/libretro/retroarch-assets/d9f969054dc7fbb6fa89519036d2b971e0855b51/src/xmb/monochrome/Nintendo%20-%20Game%20Boy.svg",
+    "sha256": "39435c861c33defc9dcd59b6f406b2db67bbd9f31cedb0a155a1723f0dc7fa16",
+    "collection": "RetroArch assets Monochrome · d9f969054dc7fbb6fa89519036d2b971e0855b51",
+    "license": "CC-BY-4.0; brand rights separate",
+    "parser": "svg-shapes"
+  },
+  "gbc": {
+    "file": "gbc-retroarch.svg",
+    "source": "https://raw.githubusercontent.com/libretro/retroarch-assets/d9f969054dc7fbb6fa89519036d2b971e0855b51/src/xmb/monochrome/Nintendo%20-%20Game%20Boy%20Color.svg",
+    "sha256": "d48bf774c8df4346cc8c5c3703f679190406438c9ab2f3d8332ba1c6395e456b",
+    "collection": "RetroArch assets Monochrome · d9f969054dc7fbb6fa89519036d2b971e0855b51",
+    "license": "CC-BY-4.0; brand rights separate",
+    "parser": "svg-shapes"
+  },
+  "gba": {
+    "file": "gba-retroarch.svg",
+    "source": "https://raw.githubusercontent.com/libretro/retroarch-assets/d9f969054dc7fbb6fa89519036d2b971e0855b51/src/xmb/monochrome/Nintendo%20-%20Game%20Boy%20Advance.svg",
+    "sha256": "a4a91a1c15a947482dc2311eddb85b0d8356a364a199ecedecd0322152868188",
+    "collection": "RetroArch assets Monochrome · d9f969054dc7fbb6fa89519036d2b971e0855b51",
+    "license": "CC-BY-4.0; brand rights separate",
+    "parser": "svg-shapes"
+  },
+  "dreamcast": {
+    "file": "dreamcast-retroarch.svg",
+    "source": "https://raw.githubusercontent.com/libretro/retroarch-assets/d9f969054dc7fbb6fa89519036d2b971e0855b51/src/xmb/monochrome/Sega%20-%20Dreamcast.svg",
+    "sha256": "284e7f243fa05c1a772f2fea1b173b2ec6c72db5e66138f0dca45c47d1f82a48",
+    "collection": "RetroArch assets Monochrome · d9f969054dc7fbb6fa89519036d2b971e0855b51",
+    "license": "CC-BY-4.0; brand rights separate",
+    "parser": "svg-shapes"
+  }
+}

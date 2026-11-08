@@ -1,0 +1,4 @@
+<RCC><qresource prefix="/stoppingnotes">
+ <file alias="StoppingNoteModel.qml">../../theme/StoppingNoteModel.qml</file>
+ <file alias="StoppingNotes.qml">../../demo/StoppingNotes.qml</file>
+</qresource><qresource prefix="/theme"><file alias="StoppingNoteModel.qml">../../theme/StoppingNoteModel.qml</file></qresource></RCC>

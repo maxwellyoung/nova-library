@@ -17,3 +17,21 @@ The private integration harness additionally exercised Settings/storage reverse 
 On Android, an unhandled Back key can close a Qt window. Preserve existing cancel bindings and add `Back` through Pegasus controls/settings. For an untouched default map the resulting setting is `keys.cancel: Esc,Backspace,GamepadB,Back`. Do not overwrite a customized map with those defaults. This is a host configuration step, not a native binary shipped by this source repository.
 
 Installation and capacity additions passed 21 Node / 7 Python checks, a Qt6 synthetic smoke including Info return and Storage, and private Qt5 integration scenarios with 236 bare / 139 bridge assertions. The integration tested missing capacity, measured bars and progressive disclosure. On Android the capacity view, compact device badges and full Info rendered; management actions opened Files and DroidDeck and returned to Home without starting a game. Maxwell also confirmed physical X/Details/Info/B and Settings/Storage/D-pad paths. Captures remain snapshots, and a launch route is not a gameplay/performance guarantee.
+
+## Recent history, display evidence and artwork
+
+Home's helper tests separate local launch history, handpicked shelves, imported activity and fallback picks. The QML harness emits Pegasus launch/finish signals and changes the fixture statistics after emission, checking that the queued refresh reads the updated values. These are API-event fixtures, not real emulator launch/return or timing measurements.
+
+Aspect tests cover source requirements, edition/recipe mismatches, changed/conflicting settings, failed/future checks, independent filter intersections and mixed-disc sets. The actual QML path exercises directional changes, empty results, explicit/shortcut Clear, Back, Info and saved-filter reconstruction in a new theme instance. In-process mock memory demonstrates the theme's save/read path; persistence to a physical device's disk remains separate.
+
+Artwork has a regression fixture for a pending loopback image request: the title fallback stays visible while the image loads. No HTTP server is started. Generated PNG covers have checked dimensions, chunk CRCs and decompressed data size, and the QML capture waits for image decoding and verifies their natural ratio. PNG output avoids requiring an SVG image plugin for this demo. The artwork and game identities are synthetic.
+
+Use `tools/smoke_demo.py --surface aspect` or `--surface home` with a compatible QML runner; `--appearance light --text-size large` exercises the alternate layout. Screenshot mode checks selected-row visibility and explanation/footer separation. Existing cloud, controls and Checks scenarios remain in the same harness. No device installation, rendering-setting change, gameplay, native 4:3 hardware proof or publication follows from these checks.
+
+## Session windows
+
+See [SESSION-WINDOWS.md](SESSION-WINDOWS.md). The real theme smoke covers label editing, filtering, clear, malformed-version refusal and theme recreation, with all Details actions and chooser/filter rows checked for focus containment. Desktop fixture storage is in memory; Android disk persistence and physical input remain separate gates.
+
+## Integrated local notebook
+
+`tools/smoke_notebook.py` drives the full theme with `demo/notebook/host.pro`, the actual native store and synthetic catalogue/input. Separate GUI processes reopen the same real disk notebook. It covers edit, screenshot selection, controller image marking, Home/Details return, dirty Back/History, conflict branches, clear/restore, legacy provenance, write refusal/retry, missing originals and corrupt metadata. Screenshots and action/footer containment are checked across dark/light, large text, wide and bottom-clearance profiles. `--absent` checks the optional context boundary. This is desktop Qt evidence; Android storage permissions, keyboard, physical touch/buttons and installed-app persistence remain separate gates.

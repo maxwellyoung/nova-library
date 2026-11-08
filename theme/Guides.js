@@ -8,6 +8,20 @@ function norm(title) {
 }
 
 var EMULATORS = [
+    { match: /^HakuX/i, profile: "hakux-nova-v1", name: "HakuX · Nova shortcuts", rows: [
+        { label: "Emulator menu", value: "Select + Y / Android Back" },
+        { label: "Save checkpoint", value: "Select + R1", detail: "Uses an empty slot first. When all ten slots are full, replacing the selected checkpoint asks for confirmation." },
+        { label: "Load checkpoint", value: "Select + L1", detail: "Loads the selected slot. Checkpoint restore still needs checking on your device; use the game's own saves too." },
+        { label: "Previous / next slot", value: "Select + L3 / R3", detail: "Changes the selected slot; it does not immediately load it. The slot selection belongs to this game." },
+        { label: "Xbox Back", value: "Tap Select", detail: "Hold Select for shortcuts. Controller shortcuts can be turned off in the emulator menu." },
+        { label: "Return to Library", value: "Android Back → Exit", detail: "Save in the game or make a checkpoint before exiting. Exit does not promise an automatic save." }
+    ], source: "Nova shortcut profile explicitly selected by the catalogue. These controls require the matching HakuX build with shortcuts enabled." },
+    { match: /^HakuX/i, name: "HakuX", rows: [
+        { label: "Emulator menu", value: "Android Back", detail: "Use the Nova's Android Back button, not the Xbox Back/Select button." },
+        { label: "Save checkpoint", value: "Back → Save state", detail: "Choose a slot in HakuX. RetroArch's Select + shoulder shortcuts are not configured in the standard HakuX build." },
+        { label: "Load checkpoint", value: "Back → Load state", detail: "Choose a saved slot in HakuX. Restore still needs checking on this device; keep the game's own saves too." },
+        { label: "Return to Library", value: "Android Back → Exit", detail: "An external Library launch offers the return-to-frontend action. Save first; exit is not an automatic checkpoint." }
+    ], source: "HakuX 1.2 session menu and input handling. A visible save-state menu does not prove a successful restore on this device." },
     { match: /^RetroArch/, name: "RetroArch", rows: [
         { label: "RetroArch menu", value: "Select + Y" },
         { label: "Save checkpoint", value: "Select + R1" },
@@ -33,6 +47,13 @@ var EMULATORS = [
 ];
 
 var GAMES = [
+    { system: "xbox", titles: ["halo", "halo: combat evolved", "halo - combat evolved"], rows: [
+        { label: "Move / look", value: "Left / right stick" },
+        { label: "Interact", value: "X  (left face button)", detail: "The opening cryo-tube prompt uses X. Later actions are explained by the game's prompts." },
+        { label: "Pause", value: "Start" }
+    ], tips: [
+        { label: "Save in the game", value: "Start → Save and Quit", detail: "Halo's own checkpoint is separate from HakuX save states. Save-and-quit and reopening the tutorial were checked on Nova." }
+    ], source: "Halo opening tutorial prompts and pause menu on Nova." },
     { system: "psx", titles: ["metal gear solid"], rows: [
         { label: "Move", value: "D-pad / left stick" },
         { label: "Punch, kick, action", value: "B  (Circle)", detail: "With your back to a wall, tap B to knock and draw a guard." },
@@ -45,10 +66,7 @@ var GAMES = [
         { label: "Pause", value: "Start" }
     ], tips: [
         { label: "Save the game", value: "Codec 140.96", detail: "Call Mei Ling on 140.96 to save to the memory card. That save lives in the game, separate from RetroArch checkpoints." },
-        { label: "Meryl's frequency", value: "140.15", detail: "The game tells you it's on the back of the CD case: 140.15." },
         { label: "Disc 2", value: "Select + Y", detail: "When the game asks for disc 2: RetroArch menu → Quick Menu → Disc Control → Eject Disc, set Current Disc Index to 2, then Insert Disc. Both discs are in the playlist." },
-        { label: "Torture", value: "Tap B fast", detail: "Mash Circle (B) to hold on. Not giving up changes which ending you get." },
-        { label: "Boss order", value: "", detail: "Revolver Ocelot · M1 Tank · Ninja · Psycho Mantis · Sniper Wolf · Hind D · Sniper Wolf again · Vulcan Raven · Metal Gear REX · Liquid." }
     ], source: "Controls: Metal Gear Solid manual button list (PSX Data Center)." },
     { system: "ps2", titles: ["ssx 3"], rows: [
         { label: "Steer · speed · check", value: "Left stick / D-pad" },
@@ -71,14 +89,13 @@ var GAMES = [
     ], tips: [
         { label: "Save in the game", value: "Start", detail: "Pause, then pick Save & Continue or Save & Quit. Seen on this Nova in Super Mario Bros. 3." },
         { label: "Your latest checkpoint", value: "Select + L1", detail: "Press it right after launch to jump to your newest numbered checkpoint." },
-        { label: "Lost Levels World 9", value: "", detail: "Finish worlds 1–8 without using a single warp zone." }
     ], source: "Controls: Super Mario Wiki's All-Stars control tables." }
 ];
 
 function emulatorFor(e) {
-    var route = e && e.route ? e.route : "";
+    var route = e && e.route ? String(e.route).trim() : "";
     for (var i = 0; i < EMULATORS.length; i++)
-        if (EMULATORS[i].match.test(route)) return EMULATORS[i];
+        if (EMULATORS[i].match.test(route) && (!EMULATORS[i].profile || EMULATORS[i].profile === e.sessionProfile)) return EMULATORS[i];
     return null;
 }
 
@@ -91,23 +108,27 @@ function gameFor(e) {
 }
 
 function available(e) {
-    return !!(e && e.systemId !== "androidapps" && (gameFor(e) || emulatorFor(e)));
+    return !!(e && e.systemId !== "androidapps" && e.systemId !== "emulators");
 }
 
 // Rows for the list panel: section headings are dim; a row's detail shows below the list.
 function rows(e) {
+    if (!available(e)) return [];
     var out = [], g = gameFor(e), emu = emulatorFor(e);
-    if (g) {
-        out.push({ label: "In the game", value: "", dim: true, detail: g.source });
-        g.rows.forEach(function(r) { out.push(r); });
-        if (g.tips.length) {
-            out.push({ label: "Stuck?", value: "", dim: true, detail: "Short notes for this game. Highlight one to read it." });
-            g.tips.forEach(function(r) { out.push(r); });
-        }
-    }
+    // Session controls come first, so saving never sits below a long game guide.
     if (emu) {
         out.push({ label: emu.name, value: "", dim: true, detail: emu.source });
         emu.rows.forEach(function(r) { out.push(r); });
+    } else {
+        out.push({ label: "Emulator controls", value: "Not checked", detail: "The catalogue does not identify a supported emulator route. Check its own controls before relying on a save/load shortcut." });
+    }
+    if (g) {
+        if (g.tips.length) {
+            out.push({ label: "Saving in the game", value: "", dim: true, detail: "Game saves and emulator checkpoints are separate. Highlight a row to read it." });
+            g.tips.forEach(function(r) { out.push(r); });
+        }
+        out.push({ label: "In the game", value: "", dim: true, detail: g.source });
+        g.rows.forEach(function(r) { out.push(r); });
     }
     return out;
 }

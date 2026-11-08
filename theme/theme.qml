@@ -3,6 +3,7 @@ import QtQml 2.15
 import "library.js" as Lib
 import "Owner.js" as Owner
 import "Guides.js" as Guides
+import "Compatibility.js" as Compatibility
 
 // Personal Library: Home is a shelf, Library is an index, Threads holds kept groups and
 // explained suggestions. Covers carry the colour; focus is light, size and a plain edge.
@@ -14,9 +15,13 @@ FocusScope {
 
     // ---------- scale, type, surface ----------
 
-    readonly property bool wide: width / Math.max(1, height) >= 1.5
-    readonly property real s: Math.max(0.5, Math.min(width / 1280, height / 800))
+    readonly property real bottomInset: typeof Owner.bottomInsetPixels === "number" && isFinite(Owner.bottomInsetPixels)
+                                        ? Math.max(0,Math.min(height*.25,Owner.bottomInsetPixels)) : 0
+    readonly property real usableHeight: height-bottomInset
+    readonly property bool wide: width / Math.max(1, usableHeight) >= 1.5
+    readonly property real s: Math.max(0.5, Math.min(width / 1280, usableHeight / 800))
     readonly property real textScale: appearance.size === "large" ? 1.12 : 1
+    readonly property bool reducedMotion: appearance.motion === false
     function px(v) { return Math.round(v * s) }
     function fs(v) { return Math.round(v * s * textScale) }
 
@@ -24,9 +29,9 @@ FocusScope {
     readonly property color ground: light ? "#f3f3f1" : "#0c0d0e"
     readonly property color ink: light ? "#151617" : "#e9eaea"
     readonly property color quiet: Qt.rgba(ink.r, ink.g, ink.b, 0.62)
-    readonly property color faint: Qt.rgba(ink.r, ink.g, ink.b, 0.38)
-    readonly property color rowQuiet: Qt.rgba(ink.r, ink.g, ink.b, 0.52)
-    readonly property color rowFaint: Qt.rgba(ink.r, ink.g, ink.b, 0.3)
+    readonly property color faint: Qt.rgba(ink.r, ink.g, ink.b, light ? 0.6 : 0.5)
+    readonly property color rowQuiet: Qt.rgba(ink.r, ink.g, ink.b, 0.66)
+    readonly property color rowFaint: Qt.rgba(ink.r, ink.g, ink.b, light ? 0.62 : 0.5)
     readonly property color slab: light ? "#e1e1de" : "#1a1c1e"
 
     readonly property string sans: global.fonts.sans
@@ -47,12 +52,15 @@ FocusScope {
     property int appIndex: 0
     property string appsReturnView: "home"
     property var pins: []
-    property var appearance: ({ surface: "dark", size: "standard", time: false })
+    property var appearance: ({ surface: "dark", size: "standard", time: false, motion: true })
 
+    property var sessions: ({version:1, labels:{}})
     property var filters: Lib.emptyFilters()
     property string sortMode: "alpha"
     property var systems: []
     readonly property var consoleSystems: systems.filter(function(x) { return x.id !== "androidapps" && x.id !== "emulators"; })
+    readonly property int consoleColumns: wide ? 3 : 2
+    readonly property var consolePreviews: Lib.consolePreviews(presentationEntries)
     property int consoleIndex: 0
     property bool fromConsole: false
     // System filter applied by Consoles browsing; tab navigation clears it so Library
@@ -72,6 +80,19 @@ FocusScope {
 
     // The native Device Library is optional. Without it there is no progress sync to show.
     readonly property var bridge: typeof deviceLibrary !== "undefined" && deviceLibrary ? deviceLibrary : null
+    readonly property var cloudBridge: typeof romCloud !== "undefined" && romCloud ? romCloud : null
+    // Only a build that compiled the optional native diagnostic exposes this; older builds see no row.
+    readonly property var controllerBridge: typeof controllerCheck !== "undefined" && controllerCheck
+                                            && typeof controllerCheck.setActive === "function"
+                                            && typeof controllerCheck.preview === "function"
+                                            && typeof controllerCheck.exportPrivateReport === "function" ? controllerCheck : null
+    readonly property var notebookBridge: typeof stoppingNotes !== "undefined" && stoppingNotes
+        && typeof stoppingNotes.capabilities === "function" && typeof stoppingNotes.openEdition === "function"
+        && typeof stoppingNotes.createNote === "function" && typeof stoppingNotes.editNote === "function"
+        && typeof stoppingNotes.clearNote === "function" && typeof stoppingNotes.restoreNote === "function"
+        && typeof stoppingNotes.setStoppingNote === "function" && typeof stoppingNotes.adoptLegacy === "function"
+        && typeof stoppingNotes.search === "function" && typeof stoppingNotes.importOriginal === "function" ? stoppingNotes : null
+    property var notebookCards: ({})
     property var device: null         // normalised read({}), or null when absent or unreadable
     readonly property bool canEdit: bridge !== null && device !== null
     property int personalRev: 0
@@ -88,6 +109,7 @@ FocusScope {
     property int settingsIndex: 0
     property var discTarget: null
     property int detailAction: 0
+    property var checkDetail: null
     property int homeIndex: 0
     property int libIndex: 0
     property string searchText: ""
@@ -97,6 +119,12 @@ FocusScope {
     property bool editingText: false
     property bool ready: false
     property string lastLogged: ""
+    property string cloudModelSignature: ""
+    property string cloudReturnOverlay: "settings"
+    property int cloudReturnPanel: 6
+    property var cloudOpened: ({})
+    property bool cloudHistoryReadable: true
+    readonly property bool integratedCloud: cloudBridge !== null && cloudBridge.catalogueVersion === 1
 
     readonly property var homeCurrent: homeIndex >= 0 && homeIndex < homeEntries.length ? homeEntries[homeIndex] : null
     readonly property var libCurrent: libIndex >= 0 && libIndex < libraryEntries.length ? libraryEntries[libIndex] : null
@@ -126,8 +154,10 @@ FocusScope {
             return;
         logFocus();
         saveTimer.restart();
+        cardTimer.restart();
     }
     onViewChanged: if (ready) { logFocus(); saveTimer.restart(); }
+    onConsoleColumnsChanged: if (ready) Qt.callLater(function(){consoleGrid.positionViewAtIndex(root.consoleIndex,GridView.Contain);})
 
     // ---------- memory ----------
 
@@ -151,6 +181,8 @@ FocusScope {
         api.memory.set("library", { filters: filters, sort: sortMode, consoleSystem: consoleFilter });
     }
 
+    Timer { id: cardTimer; interval: 0; onTriggered: { root.loadStoppingCard(root.current); if(root.homeCurrent && root.homeCurrent!==root.current)root.loadStoppingCard(root.homeCurrent); } }
+    onHomeCurrentChanged: if(ready)cardTimer.restart()
     Timer { id: saveTimer; interval: 700; onTriggered: root.saveFocus() }
     // Android can leave the soft keyboard up when hide() lands while the field
     // still owns focus or the IME is finishing its Enter. Ask again once settled.
@@ -159,7 +191,8 @@ FocusScope {
         objectName: "keyboardTimer"
         interval: 150
         onTriggered: if (!root.editingSearch && !searchInput.activeFocus
-                         && !root.editingText && !textInput.activeFocus) Qt.inputMethod.hide()
+                         && !root.editingText && !textInput.activeFocus
+                         && !(root.overlay === "notebook" && notebookPanel.mode === "edit")) Qt.inputMethod.hide()
     }
     Timer { id: noticeTimer; interval: 4000; onTriggered: root.notice = "" }
 
@@ -188,11 +221,14 @@ FocusScope {
         for (var i = 0; i < api.allGames.count; i++) {
             var e = Lib.makeEntry(api.allGames.get(i));
             e.order = i;
+            e.displayEvidence = Compatibility.displayEvidence(e, now);
             raw.push(e);
-            if (!byId[e.id])
-                byId[e.id] = e;
         }
+        if (integratedCloud) raw = Lib.mergeCloudEntries(raw,cloudBridge.games,cloudOpened);
+        raw.forEach(function(e) { if (!byId[e.id]) byId[e.id]=e; });
+        Lib.distinguishEditions(raw);
         Lib.applyPersonal(raw, device);
+        Lib.applySessions(raw, sessions);
         rawEntries = raw;
         entryById = byId;
         rebuildPresentations();
@@ -201,7 +237,7 @@ FocusScope {
 
     function rebuildPresentations() {
         var appId = appCurrent ? appCurrent.id : "";
-        appsEntries = Lib.sortEntries(rawEntries.filter(function(e) { return e.systemId === "androidapps"; }), "alpha");
+        appsEntries = Lib.sortEntries(rawEntries.filter(Lib.isApp), "alpha");
         setAppIndex(Math.max(0, Lib.indexOfId(appsEntries, appId)));
         presentationEntries = Lib.groupEntries(rawEntries);
         allEntries = Lib.sortEntries(presentationEntries, "alpha");
@@ -209,65 +245,11 @@ FocusScope {
     }
 
     function rebuildHome(keepId) {
-        var seen = {};
-        var grouped = Lib.groupEntries(rawEntries);
-        function take(list, cap) {
-            var out = [];
-            for (var i = 0; i < list.length && out.length < cap; i++) {
-                var e = list[i];
-                if (!e || e.systemId === "androidapps" || e.systemId === "emulators") continue;
-                if (e && !e.discMembers) e = Lib.presentEdition(e, grouped);
-                var key = e ? Lib.presentationKey(e) : "";
-                if (e && !seen[key]) {
-                    out.push(e);
-                    seen[key] = true;
-                }
-            }
-            return out;
-        }
-        // The owner's main games lead, most recently opened first; then the handheld's own
-        // launcher history. Imported activity and seeded picks are labelled separately.
-        var rightNow = take((Owner.rightNow || []).map(function(id) { return entryById[id]; }), 6)
-            .map(function(e, i) { return { e: e, i: i }; })
-            .sort(function(a, b) { return (b.e.lastPlayedHere || 0) - (a.e.lastPlayedHere || 0) || a.i - b.i; })
-            .map(function(x) { return x.e; });
-        var localRecent = take(Lib.sortEntries(grouped.filter(function(e) {
-            return e.lastPlayedHere !== null && e.launchable;
-        }), "local-recent"), 6);
-        var playing = take(Lib.sortEntries(rawEntries.filter(function(e) { return e.status === "playing"; }), "recent"), 6);
-        var kept = take(pins.map(function(id) { return entryById[id]; }), 1000);
-        var recent = take(Lib.sortEntries(rawEntries.filter(function(e) { return e.lastPlayed !== null; }), "recent"), 4);
-        var captions = {};
-        var gaps = {};
-        var out = [];
-        [["Right now", rightNow], ["Last opened here", localRecent], ["Playing", playing], ["Favourite", kept], ["Recent from catalogue", recent]].forEach(function(seg) {
-            if (!seg[1].length) return;
-            if (out.length) gaps[out[out.length - 1].id] = true;
-            seg[1].forEach(function(t) { captions[t.id] = seg[0]; out.push(t); });
-        });
-        if (!out.length) {
-            var starters = rawEntries.filter(function(e) { return e.home; }).sort(function(a, b) {
-                var oa = parseInt(Lib.extra(a.game, "home-order"), 10);
-                var ob = parseInt(Lib.extra(b.game, "home-order"), 10);
-                return (isNaN(oa) ? a.order : oa) - (isNaN(ob) ? b.order : ob);
-            });
-            take(starters, 12).forEach(function(e) { captions[e.id] = "Starter pick"; out.push(e); });
-        }
-
-        var fallback = false;
-        if (!out.length) {
-            for (var j = 0; j < allEntries.length && out.length < 12; j++) {
-                if (allEntries[j].launchable && allEntries[j].systemId !== "androidapps" && allEntries[j].systemId !== "emulators") {
-                    out.push(allEntries[j]);
-                    captions[allEntries[j].id] = "Set up here";
-                }
-            }
-            fallback = out.length > 0;
-        }
-
-        homeCaptions = captions;
-        homeGapAfter = gaps;
-        homeIsFallback = fallback;
+        var shelf=Lib.homeShelf(rawEntries,pins,Owner.rightNow);
+        var out=shelf.entries;
+        homeCaptions = shelf.captions;
+        homeGapAfter = shelf.gaps;
+        homeIsFallback = shelf.fallback;
         var previous = homeIndex;
         homeEntries = out;
         var idx = Lib.indexOfId(out, keepId);
@@ -302,19 +284,67 @@ FocusScope {
 
     function rebuildEverything() {
         var f = memGet("focus", {}) || {};
+        var previousHome=homeCurrent, previousLibrary=libCurrent;
         var homeId = homeCurrent ? homeCurrent.id : f.home;
         var libId = libCurrent ? libCurrent.id : f.library;
         var threadId = currentThread ? currentThread.id : f.thread;
         rebuildAll();
+        homeId=Lib.retainedEntryId(rawEntries,previousHome,homeId);
+        libId=Lib.retainedEntryId(rawEntries,previousLibrary,libId);
         rebuildHome(homeId);
         rebuildLibrary(libId);
         rebuildThreads(threadId);
         personalRev++;
+        cardTimer.restart();
     }
 
     Connections {
         target: api.allGames
         function onCountChanged() { if (root.ready) root.rebuildEverything(); }
+    }
+
+    Connections {
+        target: api
+        ignoreUnknownSignals: true
+        // Queue after Pegasus's statistics providers have handled the event.
+        function onGameFileLaunched() { if (root.ready) Qt.callLater(root.rebuildEverything); }
+        function onGameFileFinished() { if (root.ready) Qt.callLater(root.rebuildEverything); }
+    }
+
+    Timer {
+        id: cloudModelTimer;interval:120
+        onTriggered: {
+            if(!root.ready || !root.integratedCloud)return;
+            var signature=Lib.cloudSignature(root.cloudBridge.games);
+            if(signature===root.cloudModelSignature)return;
+            root.cloudModelSignature=signature;root.rebuildEverything();
+        }
+    }
+    Connections {
+        target:root.cloudBridge;ignoreUnknownSignals:true
+        function onChanged() { if(root.ready && root.integratedCloud)cloudModelTimer.restart(); }
+        function onLaunchPrepared(edition,title,platform) {
+            if(root.bridge && typeof root.bridge.recordRomLaunch === "function") {
+                try {root.bridge.recordRomLaunch(edition,title,platform);}
+                catch(error) {console.log("NOVA_LIBRARY cloud ROM history staging unavailable");}
+            }
+        }
+        function onLaunchAccepted(edition) {
+            var store=root.cloudHistoryReadable ? Lib.rememberCloudOpening({version:1,opened:root.cloudOpened},edition,Date.now()) : null;
+            if(store) {root.cloudOpened=store.opened;api.memory.set("cloudOpened",store);}
+            else root.say("Couldn't add this opening to recents. Existing history was kept.");
+            if(root.overlay==="cloud")root.closeCloud();
+            root.cloudModelSignature="";cloudModelTimer.restart();
+        }
+    }
+
+    function openCloud(entry) {
+        cloudReturnOverlay=overlay;cloudReturnPanel=panelIndex;
+        cloudPanel.targetId=entry && entry.cloudId ? entry.cloudId : 0;
+        overlay="cloud";keyboardTimer.restart();
+    }
+    function closeCloud() {
+        overlay=cloudReturnOverlay;panelIndex=cloudReturnPanel;root.forceActiveFocus();
     }
 
     // ---------- the Device Library bridge ----------
@@ -344,6 +374,9 @@ FocusScope {
 
     // Sends one action. The receipt, not the request, decides what we say happened.
     function act(action, okText) {
+        if(action.editionId && entryById[action.editionId] && entryById[action.editionId].cloudId) {
+            say("This cloud edition uses local favourites and notebook notes. Progress sync isn't set up for it yet.");return null;
+        }
         if (!canEdit || typeof bridge.act !== "function") {
             say("The Device Library isn't available, so nothing was saved.");
             return null;
@@ -383,7 +416,9 @@ FocusScope {
         if (st === "syncing")
             return "Syncing";
         if (st === "error")
-            return "Last sync failed";
+            return (waiting ? waiting + " · " : "") + "Last sync failed";
+        if (st === "unavailable")
+            return (waiting ? waiting + " · " : "") + "Can't sync";
         return waiting || (st ? st.charAt(0).toUpperCase() + st.slice(1) : "Unknown");
     }
 
@@ -410,7 +445,7 @@ FocusScope {
     function healthFooter() {
         if (!health) return "The Mac checks Home, saves, storage and RetroArch each time the Nova is plugged in. No check has reached this Nova yet.";
         var parts = (health.issues || []).concat(health.notes || []);
-        return "Checked " + Lib.sinceText(health.checkedAt, now) + ", when the Nova was last plugged in to the Mac."
+        return "Last recorded check: " + Lib.sinceText(health.checkedAt, now) + "."
              + (parts.length ? " " + parts.join(" · ") + "." : " Nothing needs you.");
     }
 
@@ -445,7 +480,8 @@ FocusScope {
         appearance = {
             surface: t.surface === "light" ? "light" : "dark",
             size: t.size === "large" ? "large" : "standard",
-            time: t.time === true
+            time: t.time === true,
+            motion: t.motion !== false
         };
 
         var v = memGet("view", "home");
@@ -456,6 +492,9 @@ FocusScope {
             catch (err) { console.log("NOVA_LIBRARY bridge read failed: " + err); device = null; }
         }
 
+        sessions = Lib.sessionStore(memGet("sessionWindows", null));
+        var savedCloud=Lib.cloudHistoryStore(memGet("cloudOpened",null),Date.now());
+        cloudHistoryReadable=savedCloud!==null;cloudOpened=savedCloud?savedCloud.opened:{};
         rebuildAll();
 
         // Saved filters only come back if they still make sense for this catalogue.
@@ -466,7 +505,9 @@ FocusScope {
             system: systemIds.indexOf(sf.system) !== -1 ? sf.system : "",
             device: Lib.DEVICES.indexOf(sf.device) !== -1 ? sf.device : "",
             kept: sf.kept === true,
-            status: Lib.STATUSES.indexOf(sf.status) !== -1 ? sf.status : ""
+            status: Lib.STATUSES.indexOf(sf.status) !== -1 ? sf.status : "",
+            aspect: Lib.ASPECTS.indexOf(sf.aspect) !== -1 ? sf.aspect : "",
+            session: [""].concat(Lib.SESSION_WINDOWS, ["unknown"]).indexOf(sf.session) !== -1 ? sf.session : ""
         };
         sortMode = Lib.SORTS.indexOf(lib.sort) !== -1 ? lib.sort : "alpha";
 
@@ -478,7 +519,7 @@ FocusScope {
         consoleFilter = typeof lib.consoleSystem === "string" ? lib.consoleSystem : filters.system;
         if (consoleFilter && !fromConsole) {
             if (filters.system === consoleFilter)
-                filters = { system: "", device: filters.device, kept: filters.kept, status: filters.status };
+                filters = { system: "", device: filters.device, kept: filters.kept, status: filters.status, aspect: filters.aspect, session: filters.session };
             consoleFilter = "";
             saveLibraryPrefs();
         }
@@ -505,8 +546,10 @@ FocusScope {
         }
         libIndex = Math.max(0, Math.min(libraryEntries.length - 1, i));
         libraryView.currentIndex = libIndex;
-        if (instant)
-            libraryView.positionViewAtIndex(libIndex, ListView.Center);
+        if (instant) {
+            libraryView.positionViewAtIndex(libIndex, ListView.Contain);
+            libraryView.alignRows();
+        }
         if (!keepAnchor)
             libAnchorId = libraryEntries[libIndex].id;
     }
@@ -580,6 +623,11 @@ FocusScope {
     function playEdition(e) {
         if (!e)
             return;
+        if(e.cloudId) {
+            if(!integratedCloud)return;
+            if(!e.launchable || cloudBridge.busy) {openCloud(e);return;}
+            saveTimer.stop();saveFocus();cloudBridge.play(e.cloudId);return;
+        }
         if (!e.launchable || e.game.missing) {
             console.log("NOVA_LIBRARY launch-skipped id=" + e.id + " reason=" + (e.game.missing ? "missing" : "no-route"));
             openDetails();
@@ -588,6 +636,12 @@ FocusScope {
         saveTimer.stop();
         saveFocus();
         console.log("NOVA_LIBRARY launch id=" + e.id + " route=" + (e.route || "unlabelled") + " view=" + view);
+        // The native launcher consumes this identity when launch begins.
+        if (bridge && typeof bridge.recordRomLaunch === "function"
+                && e.systemId !== "androidapps" && e.systemId !== "emulators" && !Lib.isSteamGame(e)) {
+            try { bridge.recordRomLaunch(e.id, e.title, e.systemId); }
+            catch (err) { console.log("NOVA_LIBRARY ROM history staging unavailable"); }
+        }
         e.game.launch();
     }
 
@@ -606,7 +660,7 @@ FocusScope {
         api.memory.set("pins", next);
         console.log("NOVA_LIBRARY keep id=" + e.id + " " + (at === -1 ? "on" : "off"));
         // Keep works without the bridge; with it, the pin also goes into the outbox.
-        if (canEdit && typeof bridge.act === "function") {
+        if (canEdit && !e.cloudId && typeof bridge.act === "function") {
             try { bridge.act({ type: "pin", editionId: e.id, pinned: at === -1 }); }
             catch (err) { console.log("NOVA_LIBRARY pin not recorded: " + err); }
         }
@@ -616,7 +670,7 @@ FocusScope {
     }
 
     function setAppearance(key, value) {
-        var a = { surface: appearance.surface, size: appearance.size, time: appearance.time };
+        var a = { surface: appearance.surface, size: appearance.size, time: appearance.time, motion: appearance.motion !== false };
         a[key] = value;
         appearance = a;
         api.memory.set("theme", a);
@@ -626,6 +680,7 @@ FocusScope {
         if (i === 0) setAppearance("surface", appearance.surface === "dark" ? "light" : "dark");
         else if (i === 1) setAppearance("size", appearance.size === "standard" ? "large" : "standard");
         else if (i === 2) setAppearance("time", !appearance.time);
+        else if (i === 3) setAppearance("motion", reducedMotion);
 
     }
 
@@ -653,7 +708,7 @@ FocusScope {
         if (!consoleFilter) return;
         var keep = libCurrent ? libCurrent.id : "";
         if (filters.system === consoleFilter)
-            filters = { system: "", device: filters.device, kept: filters.kept, status: filters.status };
+            filters = { system: "", device: filters.device, kept: filters.kept, status: filters.status, aspect: filters.aspect, session: filters.session };
         consoleFilter = "";
         saveLibraryPrefs();
         rebuildLibrary(keep);
@@ -691,23 +746,28 @@ FocusScope {
     function openDetails() {
         if (!current)
             return;
+        loadStoppingCard(current,true);
         detailAction = 0;
+        checkDetail = null;
         detailFlick.contentY = 0;
         overlay = "details";
     }
 
     function closeOverlay() {
-        if (overlay === "facts") { overlay = "details";
+        if(overlay === "notebook"){notebookPanel.back();return;}
+        if (overlay === "facts") {
+            overlay = checkDetail ? "checks" : "details";
+            checkDetail = null;
         } else if (overlay === "discs") {
             overlay = overlayReturn === "details" ? "details" : "";
             discTarget = null;
-        } else if (["appearance", "storage", "controls", "refresh"].indexOf(overlay) !== -1 && overlayReturn === "settings") {
+        } else if (["appearance", "storage", "controls", "refresh", "about", "phoneaudio"].indexOf(overlay) !== -1 && overlayReturn === "settings") {
             overlay = "settings";
             panelIndex = settingsIndex;
             overlayReturn = "";
-        } else if (overlay === "guide") {
+        } else if (overlay === "guide" || overlay === "checks") {
             overlay = overlayReturn === "details" ? "details" : "";
-        } else if (overlay === "status" || overlay === "threadpick" || (overlay === "text" && overlayReturn === "details"))
+        } else if (overlay === "session" || overlay === "status" || overlay === "threadpick" || (overlay === "text" && overlayReturn === "details"))
             overlay = "details";
         else
             overlay = "";
@@ -718,7 +778,7 @@ FocusScope {
     function setFilter(key, value) {
         if (key === "system") consoleFilter = "";
         var keep = libCurrent ? libCurrent.id : "";
-        var f = { system: filters.system, device: filters.device, kept: filters.kept, status: filters.status };
+        var f = { system: filters.system, device: filters.device, kept: filters.kept, status: filters.status, aspect: filters.aspect, session: filters.session };
         f[key] = value;
         filters = f;
         saveLibraryPrefs();
@@ -753,7 +813,7 @@ FocusScope {
             return "All systems";
         for (var i = 0; i < systems.length; i++)
             if (systems[i].id === id)
-                return systems[i].name;
+                return Lib.consoleShortName(systems[i]);
         return id;
     }
 
@@ -763,15 +823,19 @@ FocusScope {
         else if (row === 2) setFilter("kept", !filters.kept);
         else if (row === 3) setFilter("status", Lib.cycle([""].concat(Lib.STATUSES), filters.status, step));
         else if (row === 4) setSort(Lib.cycle(Lib.SORTS, sortMode, step));
-        else if (row === 5) clearFilters();
+        else if (row === 5) setFilter("aspect", Lib.cycle(Lib.ASPECTS, filters.aspect, step));
+        else if (row === 6) setFilter("session", Lib.cycle([""].concat(Lib.SESSION_WINDOWS, ["unknown"]), filters.session, step));
+        else if (row === 7) clearFilters();
     }
 
     function filterSummary() {
         var parts = [];
         if (filters.system) parts.push(systemLabel(filters.system));
         if (filters.device) parts.push(Lib.DEVICE_LABELS[filters.device]);
-        if (filters.kept) parts.push("Kept");
+        if (filters.kept) parts.push("Favourites");
         if (filters.status) parts.push(Lib.STATUS_LABELS[filters.status]);
+        if (filters.aspect) parts.push(Lib.ASPECT_LABELS[filters.aspect]);
+        if (filters.session) parts.push(Lib.SESSION_LABELS[filters.session]);
         // One filter is named; more are counted, so the line stays short on the Nova.
         var label = parts.length === 0 ? "All" : parts.length === 1 ? parts[0] : parts.length + " filters";
         // A filter hides games, so say so plainly and count what's showing.
@@ -784,6 +848,21 @@ FocusScope {
 
     function keptThreads() {
         return threads.filter(function(t) { return t.origin === "kept"; });
+    }
+
+    function setSession(value) {
+        if (sessions === null) { say("Session labels are unreadable; nothing was changed."); return; }
+        var next = Lib.changeSession(sessions, current, value);
+        if (!next) { say("This session label could not be changed."); return; }
+        try { api.memory.set("sessionWindows", next); }
+        catch (err) { say("Session label could not be stored."); return; }
+        var editedId = current ? current.id : "";
+        sessions = next;
+        // Return to the same game before re-filtering can remove it from the shelf.
+        closeOverlay();
+        rebuildEverything();
+        if (!current || current.id !== editedId) overlay = "";
+        say(value ? "Session length: " + Lib.SESSION_LABELS[value] + "." : "Session label cleared.");
     }
 
     function setStatus(status) {
@@ -810,7 +889,7 @@ FocusScope {
         if (!t || !e)
             return;
         if (t.id.indexOf("local:") === 0) {
-            say("This thread is saved here. Add games after its first sync.");
+            say("This collection is saved here. Add games after its first sync.");
             return;
         }
         var member = Lib.indexOfId(t.entries, e.id) === -1;
@@ -827,7 +906,7 @@ FocusScope {
         if (made.length === 1)
             toggleMembership(made[0], entryById[editionId]);
         else
-            say("Made “" + name + "”. Add this game once the thread appears.");
+            say("Made “" + name + "”. Add this game once the collection appears.");
     }
 
     // ---------- text entry (search and notes share the keyboard fix) ----------
@@ -853,6 +932,12 @@ FocusScope {
             if (libCurrent)
                 libAnchorId = libCurrent.id;
         }
+    }
+
+    function backFromSearch() {
+        if (searchText !== "") searchInput.text = "";
+        else if (libraryEntries.length) zone = "content";
+        else runHint("libraryback");
     }
 
     function dropKeyboard() {
@@ -909,22 +994,28 @@ FocusScope {
     function homeReason(e) {
         if (!e) return "";
         var reason = homeCaptions[e.id];
-        if (reason === "Right now") return "One of your main games right now" + (e.lastPlayedHere !== null && e.lastPlayedHere !== undefined ? " · opened " + Lib.sinceText(e.lastPlayedHere, now) + "." : ".");
-        if (reason === "Last opened here") return "From this Nova’s launch history · " + Lib.ago(e.lastPlayedHere, now) + ".";
-        if (reason === "Favourite") return "You added this to favourites. " + kKeep + " removes it.";
-        if (reason === "Playing") return "Marked Playing in your saved progress.";
-        if (reason === "Recent from catalogue") return "Recent activity from the catalogue, which can include other devices.";
-        if (reason === "Starter pick") return "A preselected starter pick, not your play history. " + kKeep + " adds a favourite to make Home yours.";
-        return "Set up on this device. Play or favourite a game to build your own Home.";
+        if (reason === "Right now") return "Handpicked · Right now";
+        if (reason === "Last opened here") return "Last opened here · " + Lib.ago(e.lastPlayedHere, now);
+        if (reason === "Favourite") return "Added to your favourites";
+        if (reason === "Playing") return "Marked Playing";
+        if (reason === "Recent from catalogue") return "Imported activity · may include other devices";
+        if (reason === "Starter pick") return "Starter pick · not play history";
+        return "Local launch route";
     }
 
     function quietLine(e, rev) {
         if (!e)
             return "";
         var parts = [];
-        if (view === "home" && homeCaptions[e.id])
-            parts.push(homeCaptions[e.id]);
-        var r = e.systemId === "androidapps" ? Lib.shortRoute(e) : Lib.availabilityText(e) + (e.launchable ? " · " + Lib.shortRoute(e) : " · Needs setup");
+        if (view === "home") {
+            if (Lib.hasInstallObservation(e)) parts.push(Lib.availabilityText(e));
+            parts.push(Lib.shortRoute(e) || "Local launch route");
+            if(e.status !== "unknown" && homeCaptions[e.id] !== "Playing")parts.push(Lib.STATUS_LABELS[e.status]);
+            if(appearance.time && e.minutes)parts.push(e.minutes+" lifetime");
+            return parts.join(" · ");
+        }
+        var r = e.cloudId ? Lib.availabilityText(e) : Lib.isApp(e) ? Lib.shortRoute(e) : (view === "library" && !e.launchable ? "" : Lib.availabilityText(e) + " · ")
+            + (e.launchable ? Lib.shortRoute(e) : "No launch route here");
         if (r)
             parts.push(r);
         if (e.discMembers) parts.push("Disc " + e.discNumber + " record");
@@ -940,34 +1031,43 @@ FocusScope {
             return [];
         var out = [];
         out.push({ t: Lib.routeSentence(e), q: false });
+        if (Lib.isApp(e)) {
+            if (Lib.appPurpose(e)) out.push({ t: Lib.appPurpose(e) + ".", q: false });
+            return out;
+        }
         ["nova", "legion"].forEach(function(d) { var v = Lib.installation(e,d); out.push({ t: Lib.deviceName(d) + " install: " + Lib.installLabel(e,d) + (v.observedAt ? " · " + Lib.dateEvidenceText(v.observedAt) + " · " + v.source + (v.offline ? " · device offline at refresh" : "") : ""), q: true }); });
+        if (Lib.sessionTargets(e).length) out.push({t: "Session length: " + Lib.SESSION_LABELS[Lib.sessionValue(e)]
+            + (sessions === null ? ". Saved labels could not be read." : ". Your local label, not completion time."), q:true});
         if (e.discMembers) {
             out.push({ t: "Notes, status and favourites shown here belong to Disc " + e.discNumber + ". Other discs keep separate records.", q: false });
             e = e.discEdition;
         }
         if (e.readyDevices.length)
             out.push({ t: "Launch route on " + e.readyDevices.map(Lib.deviceName).join(" and ") + ", per the catalogue export.", q: true });
-        if (e.systemId === "androidapps") {
-            out.push({ t: Lib.appPurpose(e) + ".", q: false });
-            return out;
-        }
         if (Lib.isSteamGame(e) && !e.launchable)
             out.push({ t: droidDeckApp()
                 ? "Open DroidDeck, then search “" + e.title + "” in Steam to check or install it there."
                 : "DroidDeck isn't configured here. Check this game in your Steam app; Library cannot install it from this entry.", q: false });
-        out.push({ t: e.novaGameplayNote && e.novaGameplaySource && e.novaGameplayObservedAt && Lib.dateEvidenceText(e.novaGameplayObservedAt) !== "Date unknown"
-            ? "Gameplay check on Nova · " + Lib.dateEvidenceText(e.novaGameplayObservedAt) + " · " + e.novaGameplaySource + ": " + e.novaGameplayNote
-            : "Gameplay on Nova: not checked. A configured launch route does not establish compatibility or performance.", q: true });
-        out.push({ t: e.displayAspect && e.displayAspectSource
-            ? "Screen aspect: " + e.displayAspect + " (" + e.displayAspectSource + "). Screen fit on this device is not checked."
-            : "Screen fit: not checked. Original aspect ratio is unknown.", q: true });
-        out.push({ t: "Nova: " + (e.nova || "not checked"), q: true });
-        out.push({ t: "Legion: " + (e.legion || "not checked"), q: true });
+        if (e.compatibilityReceipts) out.push({ t: Compatibility.summary(e, now) + ". Open Checks for the tested setup and each observation.", q: true });
+        if (e.novaGameplayNote && e.novaGameplaySource && e.novaGameplayObservedAt && Lib.dateEvidenceText(e.novaGameplayObservedAt) !== "Date unknown")
+            out.push({ t: "Earlier short check on Nova · " + Lib.dateEvidenceText(e.novaGameplayObservedAt) + " · " + e.novaGameplaySource + ": " + e.novaGameplayNote, q: true });
+        else if (!e.compatibilityReceipts)
+            out.push({ t: "Gameplay on Nova: not checked.", q: true });
+        out.push({ t: Lib.originalAspect(e) ? "Original aspect: " + Lib.originalAspect(e) + " · " + e.originalAspectSource
+            : "Original aspect: unknown.", q: true });
+        out.push({ t: Compatibility.displaySummary(e, now) + ". This describes the linked setup; it does not change display settings.", q: true });
+        if (e.displayAspect && e.displayAspectSource)
+            out.push({ t: "Catalogue screen aspect: " + e.displayAspect + " · " + e.displayAspectSource, q: true });
+        if (e.nova) out.push({ t: "Nova catalogue location: " + Lib.observationText(e.nova), q: true });
+        if (e.legion) out.push({ t: "Legion catalogue location: " + Lib.observationText(e.legion), q: true });
 
         var wait = e.pending ? ", waiting to sync" : "";
         if (e.status !== "unknown")
             out.push({ t: "Status: " + Lib.STATUS_LABELS[e.status]
                           + (e.statusSource === "catalogue" ? " (from the catalogue)" : wait), q: false });
+        var localCard=notebookCards[e.id];
+        if(localCard && localCard.ok && localCard.note) out.push({t:"Local stopping note: "+(localCard.note.text || "Image note"),q:false});
+        else if(localCard && !localCard.ok) out.push({t:"Local notebook could not be read; its stored files are preserved.",q:true});
         if (e.checkpoint)
             out.push({ t: "Checkpoint: " + e.checkpoint
                           + (e.checkpointSource === "catalogue" ? " (from the catalogue)" : wait), q: false });
@@ -979,11 +1079,10 @@ FocusScope {
         if (e.lastPlayed !== null)
             out.push({ t: "Last played: " + Lib.ago(e.lastPlayed, now), q: true });
         if (e.recReason || e.recScore !== null)
-            out.push({ t: e.recReason ? "Suggested: " + e.recReason + " (" + e.recSource + ")"
-                                      : "Suggested by the " + e.recSource + ", with no reason given.", q: true });
+            out.push({ t: e.recReason || "Suggested, with no explanation provided.", q: true });
         var names = Lib.threadNamesFor(e, threads);
         if (names.length)
-            out.push({ t: "In threads: " + names.join(", "), q: true });
+            out.push({ t: "In collections: " + names.join(", "), q: true });
         if (e.deviceFit)
             out.push({ t: "Catalogue fit note: " + e.deviceFit + ". This does not verify the original aspect ratio.", q: true });
         var why = [];
@@ -1002,18 +1101,41 @@ FocusScope {
 
     function overviewLines(e, rev) {
         if (!e) return [];
-        if (e.systemId === "androidapps") return [{ t: Lib.appPurpose(e), q: false, icon: "apps" }, { t: e.launchable ? "Open app" : "Needs setup", q: true, icon: "info" }];
-        var out = [{ t: e.discMembers ? e.discMembers.length + " discs · " + Lib.discReadyCount(e) + " set up here" : e.launchable ? (e.route || "Local shortcut configured") : "Needs setup here", q: false, icon: e.discMembers ? "disc" : "play" }];
+        if (Lib.isApp(e)) return (Lib.appPurpose(e) ? [{ t: Lib.appPurpose(e), q: false, icon: "apps" }] : [])
+            .concat([{ t: e.launchable ? "App shortcut set up here" : "App shortcut not set up here", q: true, icon: "info" }]);
+        var out = [{ t: e.cloudId ? Lib.availabilityText(e) : e.discMembers ? e.discMembers.length + " discs · " + Lib.discReadyCount(e) + " set up here" : e.launchable ? (e.route || "Local shortcut configured") : "No launch route here", q: true }];
+        if(e.cloudId)out.push({t:"Cloud saves are not enabled. Uses this Nova's emulator saves.",q:true});
         if (e.discMembers) { out.push({ t: "Disc " + e.discNumber + " progress record", q: true, icon: "note" }); e = e.discEdition; }
         var checked = e.novaGameplayNote && e.novaGameplaySource && Lib.dateEvidenceText(e.novaGameplayObservedAt) !== "Date unknown";
-        out.push({ t: checked ? "Short check · " + String(e.novaGameplayObservedAt).slice(0,10) : "Gameplay untested", q: true, icon: checked ? "check" : "info" });
-        out.push({ t: e.displayAspect && e.displayAspectSource ? "Aspect · " + e.displayAspect : "Aspect not checked", q: true, icon: "aspect" });
+        var display=Compatibility.displayEvidence(e,now);
+        var displayKnown=display.conflict || display.native43 || display.stretchOnly || Lib.originalAspect(e) || (e.displayAspect && e.displayAspectSource);
+        if (!e.compatibilityReceipts && !checked && !displayKnown)
+            out.push({t:"Gameplay and display not checked",q:true,icon:"info"});
+        else {
+            out.push({ t: e.compatibilityReceipts ? Compatibility.summary(e, now)
+                : checked ? "Earlier short check · " + e.novaGameplayNote : "Gameplay untested", q: true, icon: "info" });
+            out.push({ t: display.conflict ? "Display checks conflict" : display.native43 ? "Native 4:3 tested"
+                : display.stretchOnly ? "Stretch-only setup" : Lib.originalAspect(e) ? "Original · "+Lib.originalAspect(e)
+                : e.displayAspect && e.displayAspectSource ? "Screen · " + e.displayAspect : "Aspect not checked", q: true, icon: "aspect" });
+        }
         if (e.status !== "unknown") out.push({ t: Lib.STATUS_LABELS[e.status], q: false, icon: "note" });
-        if (e.checkpoint) out.push({ t: "Stopped: " + e.checkpoint + (e.pending ? " · sync pending" : ""), q: false, icon: "note" });
+        var card=notebookCards[e.id];
+        if(card && card.ok && card.note) out.push({t:"Stopped: "+(card.note.text || "Image note"),q:false,icon:"note"});
+        else if ((!card || !card.ok || !card.hasNotes) && e.checkpoint) out.push({ t: "Stopped: " + e.checkpoint + (e.pending ? " · sync pending" : ""), q: false, icon: "note" });
         if (e.conflict) out.push({ t: "Progress conflict · open Info", q: false, icon: "info" });
         if (e.minutes) out.push({ t: "Lifetime · " + e.minutes, q: true, icon: "clock" });
         if (e.recReason) out.push({ t: e.recReason, q: true, icon: "star" });
         return out;
+    }
+
+    function wideSummaryLines(e, rev) {
+        if (!e) return [];
+        var availability=Lib.availabilityText(e);
+        var out = [{t:availability,q:true}];
+        if (e.conflict) out.push({t:"Progress conflict · open Info",q:false});
+        return out.concat(overviewLines(e,rev).filter(function(line) {
+            return line.t !== "Progress conflict · open Info" && line.t !== availability;
+        }).slice(0,4-out.length));
     }
 
     function storageApp(kind) {
@@ -1024,6 +1146,8 @@ FocusScope {
     function droidDeckApp() {
         return Lib.configuredApp(rawEntries, "com.droiddeck.launcher", "DroidDeck");
     }
+
+    function phoneAudioApp() {return Lib.phoneAudioApp(rawEntries);}
 
     function openDroidDeck() {
         var app = droidDeckApp();
@@ -1037,17 +1161,18 @@ FocusScope {
         if (!e)
             return [];
         var out = [];
-        if (e.systemId === "androidapps") return e.launchable ? [{ a: "play", l: "Open app" }] : [];
-        if (e.discMembers || e.launchable) out.push({ a: "play", l: e.discMembers ? "Choose disc" : "Play" });
-        if (Guides.available(e)) out.push({ a: "guide", l: "Controls" });
+        if (Lib.isApp(e)) return (e.launchable ? [{ a: "play", l: "Open app" }] : []).concat([{ a: "facts", l: "Info" }]);
+        if (e.discMembers || e.launchable || e.cloudId && e.cloudSupported) out.push({ a: "play", l: e.discMembers ? "Choose disc" : e.cloudId ? Lib.cloudActionLabel(e) : "Play" });
+        if(e.cloudId)out.push({a:"downloads",l:"Download details"});
         if (Lib.isSteamGame(e) && !e.launchable && droidDeckApp()) out.push({ a: "droiddeck", l: "Open DroidDeck" });
-        out.push({ a: "keep", l: (currentPinned ? "Remove" : "Keep") + (e.discMembers ? " disc " + e.discNumber : "") });
-        if (canEdit) {
-            out.push({ a: "status", l: "Status" });
-            out.push({ a: "note", l: "Stopping note" });
-            out.push({ a: "thread", l: "Threads" });
-        }
+        if (Guides.available(e)) out.push({ a: "guide", l: "Controls" });
+        out.push({ a: "checks", l: "Checks" });
         out.push({ a: "facts", l: "Info" });
+        out.push({ a: "keep", l: (currentPinned ? "Unfavourite" : "Favourite") + (e.discMembers ? " disc " + e.discNumber : "") });
+        if (canEdit && !e.cloudId) out.push({ a: "status", l: "Status" });
+        if (notebookEligible(e) && notebookBridge || canEdit && !e.cloudId) out.push({ a: "note", l: "Note" });
+        if (canEdit && !e.cloudId) out.push({ a: "thread", l: "Collections" });
+        if (Lib.sessionTargets(e).length) out.push({ a: "session", l: "Session length" });
         return out;
     }
 
@@ -1058,12 +1183,15 @@ FocusScope {
         detailAction = i;
         var a = list[i].a;
         if (a === "play") play(current);
+        else if(a === "downloads")openCloud(current);
         else if (a === "droiddeck") openDroidDeck();
         else if (a === "guide") openPanel("guide", 0);
-        else if (a === "facts") { overlay = "facts"; detailFlick.contentY = 0; }
+        else if (a === "checks") openPanel("checks", 0);
+        else if (a === "facts") { checkDetail = null; overlay = "facts"; detailFlick.contentY = 0; }
         else if (a === "keep") toggleKeep(current);
+        else if (a === "session") openPanel("session", Math.max(0, ["unknown"].concat(Lib.SESSION_WINDOWS).indexOf(Lib.sessionValue(current))));
         else if (a === "status") openPanel("status", Math.max(0, Lib.STATUSES.indexOf(current.status)));
-        else if (a === "note") openText("checkpoint", current.id);
+        else if (a === "note") openNotebook(current);
         else if (a === "thread") openPanel("threadpick", 0);
     }
 
@@ -1072,18 +1200,22 @@ FocusScope {
         if (overlay === "discs") return discTarget ? discTarget.title + " · choose a disc" : "Choose a disc";
         if (overlay === "settings") return "Settings";
         if (overlay === "guide") return current ? current.title + " · controls" : "Controls";
+        if (overlay === "checks") return current ? current.title + " · checks" : "Compatibility checks";
         if (overlay === "storage") return "Storage";
         if (overlay === "controls") return "Launcher controls";
         if (overlay === "refresh") return "Library refresh";
+        if (overlay === "about") return "About Nova";
+        if (overlay === "phoneaudio") return "Phone audio";
         if (overlay === "appearance") return "Appearance";
         if (overlay === "filters") return "Filter and sort";
+        if (overlay === "session") return "Session length";
         if (overlay === "status") return "Status";
-        if (overlay === "threadpick") return "Threads";
+        if (overlay === "threadpick") return "Collections";
         return "";
     }
 
     function isListPanel() {
-        return ["discs", "settings", "appearance", "storage", "controls", "refresh", "filters", "status", "threadpick", "guide"].indexOf(overlay) !== -1;
+        return ["discs", "settings", "appearance", "storage", "controls", "refresh", "filters", "session", "status", "threadpick", "guide", "checks", "about", "phoneaudio"].indexOf(overlay) !== -1;
     }
 
     function storageRows() {
@@ -1094,7 +1226,7 @@ FocusScope {
         var rows = [{ label: "Known ROM files", value: label(summary), evidence: summary }];
         if (storageApp("files")) rows.push({ label: "Manage files", value: "Open Files", app: "files" });
         if (storageApp("steam")) rows.push({ label: "Steam storage", value: "Open DroidDeck", app: "steam" });
-        summary.groups.forEach(function(g) { rows.push({ label: g.name, value: label(g), evidence: g, fraction: summary.bytes && g.known ? g.bytes / summary.bytes : 0 }); });
+        summary.groups.forEach(function(g) { rows.push({ label: Lib.consoleShortName(g), value: label(g), evidence: g, fraction: summary.bytes && g.known ? g.bytes / summary.bytes : 0 }); });
         if (summary.largest.length) {
             rows.push({ label: "Largest observed files", value: "", dim: true });
             summary.largest.slice(0, 8).forEach(function(e) {
@@ -1109,8 +1241,49 @@ FocusScope {
         return "Captured " + Lib.utcDateText(oldest) + (newest !== oldest ? " to " + Lib.utcDateText(newest) : "") + ".";
     }
 
-    function homeCheckpoint(e) {
-        if (!e || !e.checkpoint) return "";
+    function noteEdition(e) { return e && e.discMembers ? e.discEdition : e; }
+    function notebookEligible(e) {
+        e=noteEdition(e);
+        return !!e && Lib.sessionId(e.id) && e.id.length<=200 && e.systemId!=="androidapps" && e.systemId!=="emulators";
+    }
+    function checkpointDescriptor(e) {
+        e=noteEdition(e);
+        return e && e.checkpoint ? {text:e.checkpoint,revision:e.revision===undefined?null:e.revision,
+            pending:e.pending===true,conflict:e.conflict===true,source:e.checkpointSource === "you"?"you":"catalogue"} : {};
+    }
+    function loadStoppingCard(e, force) {
+        if(!notebookBridge || !notebookEligible(e))return;
+        e=noteEdition(e);
+        if(!force && notebookCards[e.id])return;
+        var result;
+        try {result=notebookBridge.openEdition(e.id,{});}catch(error){result={ok:false};}
+        var next={},note=null;
+        Object.keys(notebookCards).forEach(function(id){next[id]=notebookCards[id];});
+        if(result && result.ok && result.notebook) {
+            var book=result.notebook;
+            (book.notes || []).forEach(function(n){if(n.id===book.stoppingNoteId && !n.cleared)note=n;});
+            next[e.id]={ok:true,note:note,hasNotes:book.notes.length>0};
+        } else next[e.id]={ok:false};
+        notebookCards=next;personalRev++;
+    }
+    function openNotebook(e) {
+        if(!e)return;
+        if(!notebookBridge || !notebookEligible(e)){openText("checkpoint",noteEdition(e).id);return;}
+        var selected=noteEdition(e);
+        var label=Lib.displayTitle(selected);
+        if(e.discMembers && !new RegExp("\\bdis[ck]\\s*0*" + e.discNumber + "\\b", "i").test(label))
+            label += " · Disc " + e.discNumber;
+        overlayReturn=overlay === "details"?"details":"";
+        notebookPanel.open(selected,checkpointDescriptor(selected),label);
+        overlay="notebook";
+    }
+
+    function homeCheckpoint(e, rev) {
+        if (!e) return "";
+        var card=notebookCards[noteEdition(e).id];
+        if(card && card.ok && card.note) return (e.discMembers?"Disc "+e.discNumber+" · ":"") + "You stopped: " + (card.note.text || "Image note");
+        if(card && card.ok && card.hasNotes) return "";
+        if (!e.checkpoint) return "";
         return (e.discMembers ? "Disc " + e.discNumber + " · " : "")
              + (e.checkpointSource === "you" ? "You stopped: " : "Catalogue note: ") + e.checkpoint;
     }
@@ -1126,10 +1299,30 @@ FocusScope {
                 { label: "Storage", value: "Observed ROM files" },
                 { label: "Launcher controls", value: "Button guide" },
                 { label: "Library refresh", value: "Catalogue and artwork" },
-                { label: "Status", value: healthLabel() }
-            ];
+                { label: "Last check", value: healthLabel() },
+                { label: "Cloud library", value: !cloudBridge || cloudBridge.configured === false ? "Not connected" : "Downloads and offline play" }
+            ].concat(controllerBridge ? [{ label: "Controller check", value: "Test your controls" }] : [])
+             .concat([{ label: "About Nova", value: "Credits and source" }])
+             .concat(phoneAudioApp() ? [{label:"Phone audio",value:"AirPlay over Wi-Fi"}] : []);
+        if (overlay === "phoneaudio") return [
+            {label:phoneAudioApp()?"Open receiver":"Receiver setup needed",value:phoneAudioApp()?"Choose Nova in AirPlay":"Not set up here"},
+            {label:"Connection",value:"Same Wi-Fi"},
+            {label:"Game audio",value:"Needs sound check"},
+            {label:"Listening",value:"Speakers / headphones"}
+        ];
+        if (overlay === "about") return [
+            {label:"Nova interface",value:"Maxwell Young"},
+            {label:"Pegasus Frontend",value:"Engine · GPL-3.0-or-later"},
+            {label:"Platform vectors",value:"Simple Icons 13.21.0 · CC0-1.0"},
+            {label:"Xbox / console marks",value:"Font Awesome Free 6.7.2 · Fonticons, Inc."},
+            {label:"Font Awesome licence",value:"CC BY 4.0 · fontawesome.com/license/free"},
+            {label:"Hardware vectors",value:"RetroArch Monochrome · Libretro contributors"},
+            {label:"Hardware licence",value:"CC BY 4.0 · hardware silhouettes"},
+            {label:"Source",value:"github.com/maxwellyoung/nova-library"}
+        ];
         if (overlay === "storage") return storageRows();
         if (overlay === "guide") return Guides.rows(current);
+        if (overlay === "checks") return Compatibility.rows(current && current.discMembers ? current.discEdition : current, now);
         if (overlay === "controls")
             return [
                 { label: "Choose / play", value: kAccept },
@@ -1152,26 +1345,33 @@ FocusScope {
             return [
                 { label: "Surface", value: appearance.surface === "light" ? "Light" : "Dark" },
                 { label: "Text size", value: appearance.size === "large" ? "Larger" : "Standard" },
-                { label: "Play time on focus", value: appearance.time ? "Shown" : "Hidden" }
+                { label: "Play time on focus", value: appearance.time ? "Shown" : "Hidden" },
+                { label: "Motion", value: reducedMotion ? "Reduced" : "Standard" }
             ];
         if (overlay === "filters")
             return [
                 { label: "System", value: systemLabel(filters.system) },
                 { label: "Device", value: Lib.DEVICE_LABELS[filters.device] },
-                { label: "Kept", value: filters.kept ? "Kept only" : "Any" },
+                { label: "Favourites", value: filters.kept ? "Favourites only" : "Any" },
                 { label: "Status", value: filters.status ? Lib.STATUS_LABELS[filters.status] : "Any status" },
                 { label: "Sort", value: Lib.SORT_LABELS[sortMode] },
+                { label: "Aspect", value: Lib.ASPECT_LABELS[filters.aspect] || "Any aspect" },
+                { label: "Session length", value: Lib.SESSION_LABELS[filters.session] || "Any length" },
                 { label: "Clear filters", value: "", dim: !filtering }
             ];
+        if (overlay === "session")
+            return ["unknown"].concat(Lib.SESSION_WINDOWS).map(function(value) {
+                return {label:Lib.SESSION_LABELS[value], value:Lib.sessionValue(current) === value ? "Current" : "", dim:sessions === null};
+            });
         if (overlay === "status")
             return Lib.STATUSES.map(function(s) {
                 return { label: Lib.STATUS_LABELS[s], value: current && current.status === s ? "Current" : "" };
             });
         if (overlay === "threadpick") {
             var rows = keptThreads().map(function(t) {
-                return { label: t.name, value: current && Lib.indexOfId(t.entries, current.id) !== -1 ? "In this thread" : "" };
+                return { label: t.name, value: current && Lib.indexOfId(t.entries, current.id) !== -1 ? "In this collection" : "" };
             });
-            rows.push({ label: "New thread with this game", value: "" });
+            rows.push({ label: "New collection", value: "" });
             return rows;
         }
         return [];
@@ -1186,13 +1386,19 @@ FocusScope {
         }
         if (overlay === "settings") {
             if (panelIndex === 5) return healthFooter();
-            if (panelIndex === 1) return "Sync sends saved progress, favourites and notes. It does not scan games or download artwork."
+            if (panelIndex === 1) return "Sync sends progress, favourites and existing checkpoint text. Local notebook notes and images stay on this device. It does not scan games or download artwork."
                 + (device && device.sync.message ? " " + device.sync.message : "");
+            if (panelIndex === 7 && controllerBridge) return "See what Nova receives from your controller. Nothing is remapped, and nothing leaves this device.";
             return "Your launcher settings. Emulator controls are configured inside each emulator.";
         }
         if (overlay === "guide") {
             var g = Guides.rows(current)[panelIndex];
             return g ? (g.detail || "") : "";
+        }
+        if (overlay === "checks") {
+            var c = Compatibility.rows(current && current.discMembers ? current.discEdition : current, now)[panelIndex];
+            var text = c ? c.detail : "";
+            return text.length > 220 ? text.slice(0, 220) + "…" : text;
         }
         if (overlay === "controls") return "These are the current launcher bindings. Start opens the native menu with the default mapping; its Settings includes controller mapping. Stopping notes are in game details. Emulator controls are separate. This guide does not change mappings.";
         if (overlay === "refresh") return "New games and artwork come from a refreshed catalogue. This build loads the catalogue prepared on your computer; progress sync does not scan files. The refreshed catalogue must be transferred and loaded before new games or artwork appear.";
@@ -1202,21 +1408,38 @@ FocusScope {
             if (row && row.app) return row.app === "steam" ? "Manage Steam installs in DroidDeck. No download is started here." : "Browse and manage your files in the Files app.";
             var evidence = row && row.entry ? { known: 1, unknown: 0, oldest: row.entry.sizeObservedAt, newest: row.entry.sizeObservedAt, undated: row.entry.sizeObservedAt === null ? 1 : 0 }
                          : row && row.evidence ? row.evidence : Lib.storageSummary(rawEntries);
-            return evidence.known + " known file sizes · " + evidence.unknown + " unknown. "
+            var scope = row && row.entry ? row.entry.title : row && row.evidence ? row.label : "All systems";
+            return scope + ": " + evidence.known + " known file size" + (evidence.known === 1 ? "" : "s") + " · " + evidence.unknown + " unknown. "
                  + "Bars compare known ROM files, separately from filesystem capacity. " + captureText(evidence.oldest, evidence.newest);
         }
         if (overlay === "appearance") {
-            var msg = device && device.sync.message ? " " + device.sync.message : "";
-            return "Saved with this theme on this device. Play time is lifetime time from the catalogue, not story progress."
-                   + msg;
+            return "Saved with this theme on this device. Play time is lifetime time from the catalogue, not story progress.";
         }
-        if (overlay === "filters")
-            return "Showing " + libraryEntries.length + " of " + presentationEntries.length + " browse entries · " + gameCount + " games · " + rawEntries.length + " catalogue entries"
-                   + ". Status is only what you or the catalogue set. Unknown dates and times sort last.";
+        if (overlay === "about") return "Platform names and marks identify their systems; they do not imply endorsement. Original vector sources, hashes and collection notices are retained with the source. Xbox and console artwork: Font Awesome Free 6.7.2, Fonticons, Inc. PC, DS, Nintendo 64, SNES, NES, Game Boy family and Dreamcast artwork: RetroArch assets Monochrome, Libretro contributors. Both use CC BY 4.0 (creativecommons.org/licenses/by/4.0/); source proportions are retained and colours follow the surface.";
+        if (overlay === "phoneaudio") return phoneAudioApp()
+            ? "Start the receiver, choose Nova as the audio output on your phone, then return to Library and open your game. This uses AirPlay over Wi-Fi; Bluetooth receiving is a separate firmware capability."
+            : "Set up AirPlay Server once before using phone audio. It receives audio from your phone, so a second music account is not needed. No receiver, overlay permission or background service is enabled by this screen.";
+        if (overlay === "filters") {
+            var count=libraryEntries.length + (searchText !== "" ? " shown for your search. " : " shown. ");
+            if(panelIndex === 6) return count+"Your labels for a comfortable play window, not completion time. Unlabelled games remain unknown.";
+            if(panelIndex === 5) {
+                if(filters.aspect === "original-4-3") return count+"The edition's original ratio, with a source. Display setup is checked separately.";
+                if(filters.aspect === "native-4-3") return count+"Native rendering recorded for the linked setup. Every disc in a set must match.";
+                if(filters.aspect === "stretch-only") return count+"The tested setup fills by stretching. Other configurations may differ. Every disc must match.";
+                if(filters.aspect === "unverified") return count+"No current display confirmation. Includes sets with unconfirmed discs.";
+                return count+"Choose original aspect or a recorded display check. Console and cover shape never supply the evidence.";
+            }
+            return count+"Status is what you or the catalogue set. Unknown dates and times sort last.";
+        }
+        if (overlay === "session") return sessions === null
+            ? "Saved session labels are unreadable in this build. They have been preserved; no label will be overwritten."
+            : (current ? current.title + ". " : "") + "Your comfortable play window, not time to finish. Saved on this device only."
+                + (current && current.discMembers ? " Applies to every disc in this set." : "")
+                + " Choose Not labelled to clear.";
         if (overlay === "status")
             return (current ? current.title + ". " : "") + (current && current.discMembers ? "Disc " + current.discNumber + " record. " : "") + "Status is yours to set. Play time never changes it.";
         if (overlay === "threadpick")
-            return current ? "Choose a thread to add or remove " + current.title + (current.discMembers ? " · Disc " + current.discNumber : "") + "." : "";
+            return current ? "Choose a collection to add or remove " + current.title + (current.discMembers ? " · Disc " + current.discNumber : "") + "." : "";
         return "";
     }
 
@@ -1226,6 +1449,9 @@ FocusScope {
             var member = discTarget && discTarget.discMembers[i];
             if (member && member.launchable && !member.game.missing) playEdition(member);
             else say("This disc isn't set up here. No game was launched.");
+        } else if (overlay === "checks") {
+            var check = Compatibility.rows(current && current.discMembers ? current.discEdition : current, now)[i];
+            if (check) { checkDetail = check; overlay = "facts"; detailFlick.contentY = 0; }
         } else if (overlay === "storage") {
             var row = storageRows()[i];
             if (row && row.app) { var app = storageApp(row.app); if (app) playEdition(app); }
@@ -1237,8 +1463,15 @@ FocusScope {
             else if (i === 3) openPanel("controls", 0);
             else if (i === 4) openPanel("refresh", 0);
             else if (i === 5) loadHealth();
+            else if (i === 6) openCloud(null);
+            else if (i === 7 && controllerBridge) { overlay = "controller"; controllerPanel.open(); }
+            else if (i === (controllerBridge ? 8 : 7)) openPanel("about", 0);
+            else if (i === (controllerBridge ? 9 : 8) && phoneAudioApp()) openPanel("phoneaudio",0);
+        } else if(overlay === "phoneaudio") {
+            if(i===0 && phoneAudioApp())playEdition(phoneAudioApp());
         } else if (overlay === "appearance") cycleAppearance(i);
         else if (overlay === "filters") cycleFilter(i, step);
+        else if (overlay === "session") { setSession(i === 0 ? "" : Lib.SESSION_WINDOWS[i-1]); }
         else if (overlay === "status") { setStatus(Lib.STATUSES[i]); closeOverlay(); }
         else if (overlay === "threadpick") {
             var kept = keptThreads();
@@ -1248,18 +1481,23 @@ FocusScope {
     }
 
     function hints() {
-        if (overlay === "facts") return [{ k: kCancel, l: "Back", a: "close" }];
+        if (overlay === "notebook") return notebookPanel.hints();
+        if (overlay === "controller") return controllerPanel.hints();
+        if (overlay === "facts") return (detailFlick.contentHeight > detailFlick.height+1 ? [{k:"↑ ↓",l:"Read",a:"readfacts"}] : []).concat([{ k: kCancel, l: "Back", a: "close" }]);
         if (overlay === "discs") {
             var member = discTarget && discTarget.discMembers[panelIndex];
             return [{ k: kAccept, l: member && member.launchable && !member.game.missing ? "Play disc" : "Unavailable", a: "panel" }, { k: kCancel, l: "Back", a: "close" }];
         }
         if (overlay === "settings") return [{ k: kAccept, l: panelIndex === 1 ? "Sync now" : panelIndex === 5 ? "Reload" : "Open", a: "panel" }, { k: kCancel, l: "Back", a: "close" }];
+        if (overlay === "phoneaudio") return (panelIndex===0 && phoneAudioApp() ? [{k:kAccept,l:"Open receiver",a:"panel"}] : []).concat([{k:kCancel,l:overlayReturn==="settings"?"Settings":"Apps",a:"close"}]);
         if (overlay === "storage") {
             var row = storageRows()[panelIndex];
             return (row && row.app ? [{ k: kAccept, l: "Open", a: "panel" }] : [])
                 .concat([{ k: "↑ ↓", l: "Browse", a: "read" }, { k: kCancel, l: "Back", a: "close" }]);
         }
-        if (overlay === "controls" || overlay === "refresh" || overlay === "guide")
+        if (overlay === "checks")
+            return [{ k: kAccept, l: "Read full", a: "panel" }, { k: "↑ ↓", l: "Browse", a: "read" }, { k: kCancel, l: "Back", a: "close" }];
+        if (overlay === "controls" || overlay === "refresh" || overlay === "guide" || overlay === "about")
             return [{ k: "↑ ↓", l: "Read", a: "read" }, { k: kCancel, l: "Back", a: "close" }];
         if (overlay === "appearance" || overlay === "filters") {
             var p = [{ k: kAccept, l: "Change", a: "panel" }];
@@ -1267,7 +1505,7 @@ FocusScope {
             p.push({ k: kCancel, l: "Done", a: "close" });
             return p;
         }
-        if (overlay === "status" || overlay === "threadpick")
+        if (overlay === "session" || overlay === "status" || overlay === "threadpick")
             return [{ k: kAccept, l: "Choose", a: "panel" }, { k: kCancel, l: "Back", a: "close" }];
         if (overlay === "text")
             return [{ k: kAccept, l: "Save", a: "save" }, { k: kCancel, l: "Cancel", a: "cancel" }];
@@ -1279,48 +1517,62 @@ FocusScope {
             var s = searchCol === 0 ? [{ k: kAccept, l: "Type", a: "search" }, { k: kKeep, l: "Filter", a: "filters" }]
                                     : [{ k: kAccept, l: "Filter", a: "filters" }];
             if (filtering) s.push({ k: kDetails, l: "Clear filters", a: "clearfilters" });
+            s.push({ k: kCancel, l: searchText !== "" ? "Clear search" : (libraryEntries.length ? "List" : "Back"), a: "searchback" });
             return s;
         }
-        if (view === "apps" && !current) return [{ k: kCancel, l: "Back", a: "appsback" }];
-        if (view === "apps") return [
-            { k: kAccept, l: current && current.launchable ? "Open app" : "Details", a: "play" },
-            { k: kDetails, l: "Details", a: "details" }, { k: kCancel, l: "Back", a: "appsback" }
-        ];
+        if (view === "apps" && !current) return [{k:kKeep,l:"Phone audio",a:"phoneaudio"},{ k: kCancel, l: "Back", a: "appsback" }];
+        if (view === "apps") return [{ k: kAccept, l: current && current.launchable ? "Open app" : "Details", a: "play" }]
+            .concat(current && current.launchable ? [{ k: kDetails, l: "Details", a: "details" }] : [])
+            .concat([{k:kKeep,l:"Phone audio",a:"phoneaudio"},{ k: kCancel, l: "Back", a: "appsback" }]);
         if (view === "consoles")
             return consoleSystems.length ? [{ k: kAccept, l: "Browse games", a: "console" }, { k: kCancel, l: "Home", a: "home" }]
                                   : [{ k: kCancel, l: "Home", a: "home" }];
         if (view === "threads" && threadZone === "list") {
             var t = [];
             if (currentThread && currentThread.entries.length) t.push({ k: kAccept, l: "Open", a: "openthread" });
-            if (canKeepThread(currentThread)) t.push({ k: kKeep, l: "Keep thread", a: "keepthread" });
-            if (canEdit) t.push({ k: kDetails, l: "New thread", a: "newthread" });
+            t.push({k:kCancel,l:"Home",a:"home"});
+            if (canKeepThread(currentThread)) t.push({ k: kKeep, l: "Save collection", a: "keepthread" });
+            if (canEdit) t.push({ k: kDetails, l: "New collection", a: "newthread" });
             return t;
         }
+        if (view === "home" && !allEntries.length)
+            return [{ k:kAccept, l:"Library setup", a:"setup" }];
         var h = [];
-        if (current && !current.launchable && Lib.isSteamGame(current)) h.push({ k: kAccept, l: "Details", a: "play" });
+        if (current && current.cloudId && !current.launchable && current.cloudSupported) h.push({ k: kAccept, l: Lib.cloudActionLabel(current), a: "play" });
+        else if (current && !current.launchable && !current.discMembers) h.push({ k: kAccept, l: "Details", a: "play" });
         if (current && (current.discMembers || current.launchable)) h.push({ k: kAccept, l: current.discMembers ? "Choose disc" : "Play", a: "play" });
-        if (current) h.push({ k: kDetails, l: "Details", a: "details" });
+        if (current && (current.launchable || current.discMembers || current.cloudId)) h.push({ k: kDetails, l: "Details", a: "details" });
         if (current) h.push({ k: kKeep, l: (currentPinned ? "Unfavourite" : "Favourite") + (current.discMembers ? " disc " + current.discNumber : ""), a: "keep" });
+        if (view === "library") h.push({ k: kCancel, l: fromConsole ? "Consoles" : "Home", a: "libraryback" });
+        if (view === "threads" && threadZone === "members") h.push({ k: kCancel, l: "Collections", a: "threadback" });
         return h;
     }
 
     function runHint(a) {
-        if (a === "play") play(current);
+        if (a.indexOf("notebook:") === 0) notebookPanel.runHint(a.slice(9));
+        else if (a.indexOf("controller:") === 0) controllerPanel.runHint(a.slice(11));
+        else if (a === "setup") { openPanel("settings",4); panelActivate(4,1); }
+        else if (a === "play") play(current);
         else if (a === "droiddeck") openDroidDeck();
+        else if (a === "phoneaudio") openPanel("phoneaudio",0);
         else if (a === "details") openDetails();
         else if (a === "keep") toggleKeep(current);
         else if (a === "close") closeOverlay();
         else if (a === "panel") panelActivate(panelIndex, 1);
+        else if (a === "readfacts") detailFlick.contentY = Math.max(0,Math.min(detailFlick.contentHeight-detailFlick.height,detailFlick.contentY+px(120)));
         else if (a === "read") panelIndex = Math.min(panelRows(personalRev).length - 1, panelIndex + 1);
         else if (a === "nav") navActivate(navIndex);
         else if (a === "content") zone = "content";
         else if (a === "search") beginSearch();
         else if (a === "endsearch") endSearch(true);
+        else if (a === "searchback") backFromSearch();
         else if (a === "filters") openPanel("filters", 0);
         else if (a === "clearfilters") clearFilters();
         else if (a === "console") browseConsole();
         else if (a === "home") switchView("home");
         else if (a === "appsback") switchView(appsReturnView);
+        else if (a === "threadback") threadZone = "list";
+        else if (a === "libraryback") switchView(fromConsole ? "consoles" : "home");
         else if (a === "openthread") openThread();
         else if (a === "keepthread") keepThread(currentThread);
         else if (a === "newthread") openText("thread-name", "");
@@ -1346,9 +1598,55 @@ FocusScope {
     // ---------- controller and keyboard ----------
 
     Keys.onPressed: function(event) { root.handleKey(event); }
+    property bool androidBackArmed: false
+    property string androidBackContext: ""
+    function backContext() { return [overlay, view, zone, threadZone].join("|"); }
+    Keys.onReleased: function(event) { root.handleKeyRelease(event); }
+    function handleKeyRelease(event) {
+        if (overlay === "notebook") { notebookPanel.handleKeyRelease(event); return; }
+        if (overlay === "controller") { controllerPanel.handleKeyRelease(event); return; }
+        if (event.key !== Qt.Key_Back) return;
+        event.accepted=true;
+        var armed=androidBackArmed && androidBackContext===backContext();
+        androidBackArmed=false;
+        if (!armed) return;
+        if (overlay === "cloud") cloudPanel.goBack();
+        else if (editingSearch) endSearch(false);
+        else if (overlay === "text") endText(false);
+        else if (overlay !== "") closeOverlay();
+        else if (zone === "nav") zone = view === "library" ? "search" : "content";
+        else if (zone === "search") backFromSearch();
+        else if (view === "threads" && threadZone === "members") runHint("threadback");
+        else if (view === "apps") runHint("appsback");
+        else if (view === "library") runHint("libraryback");
+        else if (view !== "home") switchView("home");
+        else zone="content";
+    }
+    onEnabledChanged: if(!enabled)androidBackArmed=false
+    function applicationActive(active) {
+        if(active)return;
+        androidBackArmed=false;
+        if(cloudBridge && cloudBridge.launchChecking===true && typeof cloudBridge.cancel==="function")cloudBridge.cancel();
+    }
+    Connections { target:Qt.application; function onStateChanged(){root.applicationActive(Qt.application.state===Qt.ApplicationActive);} }
 
     function handleKey(event) {
         var k = api.keys;
+        if(overlay === "notebook"){notebookPanel.handleKey(event);return;}
+        // Android finishes an Activity on an unconsumed Back release. Keep its
+        // reverse path inside the launcher, without changing controller B/Select.
+        if (overlay !== "controller" && event.key === Qt.Key_Back) {
+            event.accepted=true;
+            if (!event.isAutoRepeat) {androidBackArmed=true;androidBackContext=backContext();}
+            return;
+        }
+        if (overlay === "cloud") {
+            if (!event.isAutoRepeat || k.isUp(event) || k.isDown(event)) cloudPanel.handleKey(event);
+            event.accepted = true;
+            return;
+        }
+        // Before every mapped-key rule: during capture no button may reach Back, Start or the menu.
+        if (overlay === "controller") { controllerPanel.handleKey(event); return; }
         if (event.isAutoRepeat && (k.isAccept(event) || k.isDetails(event) || k.isFilters(event) || k.isCancel(event))) {
             event.accepted = true;
             return;
@@ -1380,8 +1678,8 @@ FocusScope {
             event.accepted = true;
             var rows = panelRows(personalRev).length;
             // Left and right change a value; they never trigger Sync or Clear filters.
-            var cycles = (overlay === "appearance" && panelIndex < 3) || (overlay === "filters" && panelIndex < 5);
-            if (k.isCancel(event) || (overlay === "filters" && k.isFilters(event))) closeOverlay();
+            var cycles = (overlay === "appearance" && panelIndex < 4) || (overlay === "filters" && panelIndex < 7);
+            if (k.isCancel(event) || event.key === Qt.Key_Back || (overlay === "filters" && k.isFilters(event))) closeOverlay();
             else if (k.isUp(event)) panelIndex = Math.max(0, panelIndex - 1);
             else if (k.isDown(event)) panelIndex = Math.min(rows - 1, panelIndex + 1);
             else if (k.isAccept(event)) panelActivate(panelIndex, 1);
@@ -1424,11 +1722,7 @@ FocusScope {
             else if (k.isAccept(event)) { if (searchCol === 0) beginSearch(); else openPanel("filters", 0); }
             else if (k.isFilters(event)) openPanel("filters", 0);
             else if (k.isDetails(event)) { if (filtering) clearFilters(); }
-            else if (k.isCancel(event)) {
-                if (searchText !== "") searchInput.text = "";
-                else if (libraryEntries.length) zone = "content";
-                else switchView(fromConsole ? "consoles" : "home");
-            }
+            else if (k.isCancel(event)) backFromSearch();
             else event.accepted = false;
             return;
         }
@@ -1439,7 +1733,7 @@ FocusScope {
             else if (k.isUp(event)) { zone = "nav"; navIndex = 0; }
             else if (k.isPageUp(event)) homeIndex = 0;
             else if (k.isPageDown(event)) homeIndex = Math.max(0, homeEntries.length - 1);
-            else if (k.isAccept(event)) play(current);
+            else if (k.isAccept(event)) { if (!allEntries.length) runHint("setup"); else play(current); }
             else if (k.isDetails(event)) openDetails();
             else if (k.isFilters(event)) toggleKeep(current);
             else return; // B and Start fall through to the Pegasus menu
@@ -1454,6 +1748,7 @@ FocusScope {
             else if (k.isPageDown(event)) setAppIndex(appIndex + 6);
             else if (k.isAccept(event)) play(current);
             else if (k.isDetails(event)) openDetails();
+            else if (k.isFilters(event)) openPanel("phoneaudio",0);
             else if (k.isCancel(event)) switchView(appsReturnView);
             else return;
             event.accepted = true;
@@ -1464,10 +1759,10 @@ FocusScope {
             if (k.isLeft(event)) selectConsole(consoleIndex - 1);
             else if (k.isRight(event)) selectConsole(consoleIndex + 1);
             else if (k.isUp(event)) {
-                if (consoleIndex < 3) { zone = "nav"; navIndex = views.indexOf("consoles"); }
-                else selectConsole(consoleIndex - 3);
+                if (consoleIndex < consoleColumns) { zone = "nav"; navIndex = views.indexOf("consoles"); }
+                else selectConsole(consoleIndex - consoleColumns);
             }
-            else if (k.isDown(event)) selectConsole(consoleIndex + 3);
+            else if (k.isDown(event)) selectConsole(consoleIndex + consoleColumns);
             else if (k.isAccept(event)) browseConsole();
             else if (k.isCancel(event)) switchView("home");
             else return;
@@ -1603,12 +1898,12 @@ FocusScope {
         visible: root.view === "consoles" && root.overlay === ""
         Text {
             x: px(64); y: px(103)
-            text: "Choose a console"; color: root.ink
+            text: "Your consoles"; color: root.ink
             font.family: root.sans; font.pixelSize: fs(30)
         }
         Text {
             x: px(64); y: px(147)
-            text: "Pick a system to browse its games."
+            text: root.consoleSystems.length ? "Selected " + (root.consoleIndex+1) + " of " + root.consoleSystems.length + " systems" : "No systems yet"
             color: root.quiet; font.family: root.sans; font.pixelSize: fs(19)
             width: parent.width - px(128); wrapMode: Text.Wrap
         }
@@ -1616,39 +1911,64 @@ FocusScope {
             id: consoleGrid
             objectName: "consoleGrid"
             x: px(64); y: px(205)
-            width: parent.width - px(128); height: parent.height - y - px(108)
-            cellWidth: width / 3; cellHeight: px(174)
+            width: parent.width - px(128) + px(16)
+            // Full rows keep system names intact when the selected row scrolls.
+            readonly property real rowSpace: root.usableHeight-y-px(108)+px(16)
+            readonly property int rows: Math.max(1,Math.floor(rowSpace/px(200)))
+            height: rows*cellHeight
+            cellWidth: width / root.consoleColumns; cellHeight: Math.max(px(200),Math.floor(rowSpace/rows))
             model: root.consoleSystems; currentIndex: root.consoleIndex
-            clip: true; boundsBehavior: Flickable.StopAtBounds
+            clip: true; boundsBehavior: Flickable.StopAtBounds; snapMode: GridView.SnapToRow
             delegate: Rectangle {
                 width: consoleGrid.cellWidth - px(16); height: consoleGrid.cellHeight - px(16)
                 color: root.slab
                 border.width: root.zone === "content" && root.consoleIndex === index ? Math.max(2, px(3)) : 0
                 border.color: root.ink
                 readonly property int ready: root.consoleReady(modelData.id)
+                readonly property var previews: root.consolePreviews[modelData.id] || []
+                Accessible.name: Lib.consoleShortName(modelData) + ", " + modelData.count + " in catalogue, " + ready + " set up here"
+                Accessible.role: Accessible.Button
+                Accessible.onPressAction: { root.selectConsole(index); root.browseConsole(); }
                 Icon {
                     objectName: "consoleGlyph_" + modelData.id
-                    x: px(20); y: px(18); width: px(58); height: width
-                    name: modelData.id; strokeWidth: 1.4
+                    x: px(24); y: consoleName.y + (consoleNameMetrics.height - height)/2; width: px(56); height: px(44)
+                    name: Lib.consoleCardGlyph(modelData.id); strokeWidth: 1.6
                     ink: parent.ready ? root.ink : root.quiet
                 }
+                FontMetrics { id: consoleNameMetrics; font: consoleName.font }
                 Text {
-                    x: px(92); y: px(22); width: parent.width - px(108)
+                    id: consoleName
+                    objectName: "consoleName_" + modelData.id
+                    x: px(96); y: px(25); width: (parent.previews.length ? parent.width * 0.56 : parent.width-px(24)) - x
                     text: Lib.consoleShortName(modelData); color: root.ink
                     font.family: root.sans; font.pixelSize: fs(25); font.weight: Font.DemiBold
                     wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
                 }
-                Row {
-                    x: px(22); anchors.bottom: parent.bottom; anchors.bottomMargin: px(18); spacing: px(8)
-                    Icon {
-                        name: parent.parent.ready ? "play" : "info"; width: fs(18); height: width
-                        anchors.verticalCenter: parent.verticalCenter
-                        ink: parent.parent.ready ? root.ink : root.quiet
-                    }
-                    Text {
-                        text: (parent.parent.ready === modelData.count ? "All " + modelData.count + " ready"
-                               : parent.parent.ready + " of " + modelData.count + " ready")
-                        color: root.quiet; font.family: root.sans; font.pixelSize: fs(18)
+                Text {
+                    x: px(24); anchors.bottom: parent.bottom; anchors.bottomMargin: px(24)
+                    objectName: "consoleAvailability_" + modelData.id
+                    width: parent.previews.length ? parent.width * 0.52 - px(24) : parent.width-px(48)
+                    text: modelData.count + " in catalogue\n" + parent.ready + " set up here"
+                    color: root.quiet; font.family: root.sans; font.pixelSize: fs(20)
+                    wrapMode: Text.NoWrap; maximumLineCount: 2; elide: Text.ElideRight
+                }
+                Item {
+                    anchors.right: parent.right; anchors.rightMargin: px(24)
+                    y: px(22); width: parent.width * 0.36; height: parent.height - px(44)
+                    clip: true
+                    Repeater {
+                        model: parent.parent.previews
+                        delegate: ArtView {
+                            entry: modelData
+                            visible: loaded
+                            // Wide covers stay fully visible above the portrait stack.
+                            z: ratio > 1 ? 10 + index : index
+                            readonly property var fit: Lib.fitArea(ratio,px(94)*px(150),px(106),parent.height)
+                            x: parent.parent.previews.length === 1 ? parent.width-width : index * (parent.width-width)/(parent.parent.previews.length-1); y: parent.height - height
+                            width: fit.w; height: fit.h
+                            fontFamily: root.sans; slabColor: root.slab; textColor: root.ink; quietColor: root.quiet
+                            decodeHeight: 240
+                        }
                     }
                 }
                 MouseArea {
@@ -1676,7 +1996,7 @@ FocusScope {
             id: appsList
             x: px(40); y: px(140)
             width: Math.round(root.width * 0.44)
-            height: Math.floor((root.height - px(244)) / appsView.rowH) * appsView.rowH
+            height: Math.floor((root.usableHeight - px(244)) / appsView.rowH) * appsView.rowH
             clip: true
             model: root.appsEntries
             currentIndex: root.appIndex
@@ -1698,14 +2018,14 @@ FocusScope {
                     x: px(24); width: parent.width - px(40)
                     anchors.verticalCenter: parent.verticalCenter; spacing: px(3)
                     Text {
-                        width: parent.width; text: modelData.title
+                        width: parent.width; text: Lib.displayTitle(modelData)
                         color: parent.parent.isCurrent ? root.ink : modelData.launchable ? root.rowQuiet : root.rowFaint
                         font.family: root.sans; font.pixelSize: fs(30)
                         font.weight: parent.parent.isCurrent ? Font.DemiBold : Font.Normal
-                        elide: Text.ElideRight
+                        elide: modelData.editionLabel ? Text.ElideMiddle : Text.ElideRight
                     }
                     Text {
-                        width: parent.width; text: Lib.appPurpose(modelData)
+                        width: parent.width; text: Lib.appPurpose(modelData); visible: text !== ""
                         color: root.faint; font.family: root.sans; font.pixelSize: fs(19)
                         elide: Text.ElideRight
                     }
@@ -1722,12 +2042,12 @@ FocusScope {
             width: root.width - x - px(64); spacing: px(20)
             visible: root.appCurrent !== null
             Text {
-                width: parent.width; text: root.appCurrent ? root.appCurrent.title : ""
+                width: parent.width; text: Lib.displayTitle(root.appCurrent)
                 color: root.ink; font.family: root.sans; font.pixelSize: fs(44); font.weight: Font.DemiBold
                 maximumLineCount: 2; elide: Text.ElideRight; wrapMode: Text.Wrap
             }
             Text {
-                width: parent.width; text: Lib.appPurpose(root.appCurrent)
+                width: parent.width; text: Lib.appPurpose(root.appCurrent); visible: text !== ""
                 color: root.quiet; font.family: root.sans; font.pixelSize: fs(26); wrapMode: Text.Wrap
             }
             Text {
@@ -1750,21 +2070,23 @@ FocusScope {
         anchors.fill: parent
         visible: root.view === "home" && root.overlay === ""
 
-        readonly property real shelfBase: Math.round(root.height * 0.64)
+        readonly property real shelfBase: Math.round(root.usableHeight * 0.64)
         // The greeting sits above the shelf; covers give up a little height to make room.
-        readonly property real focusH: Math.min(px(392), shelfBase - px(150))
+        readonly property real focusH: Math.min(px(440), shelfBase - homeGreeting.y - homeGreeting.height - px(34))
         readonly property real area: focusH * focusH * 2 / 3
 
         Column {
+            id: homeGreeting
             objectName: "homeGreeting"
             x: px(64); y: px(104); width: parent.width - px(128); spacing: px(6)
             Text {
-                text: root.greetingText; color: root.ink
+                text: Lib.homeHeading(root.homeEntries,root.homeCaptions,root.homeIsFallback,root.greetingText)
+                color: root.ink
                 font.family: root.sans; font.pixelSize: fs(34); font.weight: Font.DemiBold
             }
             Text {
-                visible: text !== ""; width: parent.width
-                text: root.leftOffText; color: root.quiet
+                visible: root.homeEntries.length > 1; width: parent.width
+                text: (root.homeIndex+1)+" / "+root.homeEntries.length; color: root.quiet
                 font.family: root.sans; font.pixelSize: fs(20); elide: Text.ElideRight
             }
         }
@@ -1782,7 +2104,7 @@ FocusScope {
                 height: home.shelfBase - shelf.y
                 spacing: px(36)
                 x: px(64) - focusX
-                Behavior on x { NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
+                Behavior on x { enabled: !root.reducedMotion; NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
 
                 Repeater {
                     id: shelfRepeater
@@ -1790,7 +2112,7 @@ FocusScope {
                     delegate: Item {
                         id: cell
                         readonly property bool isCurrent: index === root.homeIndex
-                        readonly property real k: isCurrent ? 1 : 0.72
+                        readonly property real k: isCurrent ? 1 : 0.8
                         readonly property var fit: Lib.fitArea(cover.ratio, home.area * k * k, root.width * 0.55 * k, home.focusH * k)
                         width: fit.w + (root.homeGapAfter[modelData.id] ? px(60) : 0)
                         height: shelfRow.height
@@ -1868,9 +2190,23 @@ FocusScope {
             spacing: px(6)
             visible: root.homeCurrent !== null
 
+            Row {
+                width: parent.width; spacing: px(10)
+                Icon {
+                    name: Lib.consoleCardGlyph(root.homeCurrent ? root.homeCurrent.systemId : "")
+                    width: px(28); alignX: 0
+                    height: px(22); ink: root.quiet
+                }
+                Text {
+                    width: parent.width-px(96)
+                    text: root.homeCurrent ? Lib.consoleShortName({id:root.homeCurrent.systemId,name:root.homeCurrent.systemName})+" · "+root.homeReason(root.homeCurrent) : ""
+                    color: root.quiet; font.family: root.sans; font.pixelSize: fs(20)
+                    maximumLineCount: 1; elide: Text.ElideRight
+                }
+            }
             Text {
                 width: parent.width
-                text: root.homeCurrent ? root.homeCurrent.title : ""
+                text: Lib.displayTitle(root.homeCurrent)
                 color: root.ink
                 font.family: root.sans
                 font.pixelSize: fs(44)
@@ -1887,21 +2223,12 @@ FocusScope {
                 elide: Text.ElideRight
             }
             Text {
-                width: parent.width
-                visible: root.homeCurrent !== null
-                text: root.homeReason(root.homeCurrent)
-                color: root.faint
-                font.family: root.sans
-                font.pixelSize: fs(24)
-                maximumLineCount: 1
-                elide: Text.ElideRight
-            }
-            Text {
                 objectName: "homeCheckpoint"
                 width: parent.width
-                visible: root.homeCurrent !== null && (root.homeCurrent.checkpoint !== "" || root.canEdit)
-                text: root.homeCheckpoint(root.homeCurrent) || "Add a stopping note · " + root.kDetails + " Details"
-                color: root.homeCurrent && root.homeCurrent.checkpoint ? root.quiet : root.faint
+                // Only a real note earns this line; Details' Note action is the way to add one.
+                visible: text !== ""
+                text: root.homeCheckpoint(root.homeCurrent, root.personalRev)
+                color: root.quiet
                 font.family: root.sans
                 font.pixelSize: fs(24)
                 maximumLineCount: root.wide ? 1 : 2
@@ -1910,21 +2237,21 @@ FocusScope {
                 MouseArea {
                     objectName: "homeNote"
                     anchors.fill: parent
-                    enabled: root.canEdit && root.homeCurrent !== null
-                    onClicked: root.openText("checkpoint", root.homeCurrent.id)
+                    enabled: root.homeCurrent !== null && (root.notebookBridge !== null || root.canEdit)
+                    onClicked: root.openNotebook(root.homeCurrent)
                 }
             }
         }
 
         Column {
             x: px(64)
-            y: home.shelfBase - px(120)
+            y: px(220)
             width: root.width - px(128)
             spacing: px(10)
             visible: root.homeEntries.length === 0
 
             Text {
-                text: root.allEntries.length ? "Nothing on Home yet." : "The library is empty."
+                text: root.allEntries.length ? "Nothing on Home yet." : "Add your first games."
                 color: root.ink
                 font.family: root.sans
                 font.pixelSize: fs(36)
@@ -1935,7 +2262,7 @@ FocusScope {
                 wrapMode: Text.Wrap
                 text: root.allEntries.length
                       ? "Open Library with " + root.kNext + " and keep a game with " + root.kKeep + "."
-                      : "Pegasus found no games in the exported metadata."
+                      : "No games have been loaded. Library setup explains how to add your catalogue."
                 color: root.quiet
                 font.family: root.sans
                 font.pixelSize: fs(26)
@@ -1953,11 +2280,11 @@ FocusScope {
         readonly property real listX: px(40)
         readonly property real listW: root.wide ? root.width * 0.40 - listX : px(660)
         readonly property real listTop: px(156)
-        readonly property real listBottom: root.height - px(104)
+        readonly property real listBottom: root.usableHeight - px(104)
         readonly property real rowH: Math.round(fs(30) * 2.1)
         readonly property real panelX: root.wide ? Math.round(root.width * 0.42) : px(736)
         readonly property real panelW: root.wide ? Math.round(root.width * 0.29) : px(480)
-        readonly property real panelBase: root.wide ? listBottom - px(8) : listBottom - px(84)
+        readonly property real panelBase: root.wide ? listBottom - px(8) : libraryCaption.y - px(18)
         readonly property real panelH: panelBase - listTop
 
         // Search line, with the one filter and sort control at its end.
@@ -2065,6 +2392,7 @@ FocusScope {
 
         ListView {
             id: libraryView
+            objectName: "libraryList"
             x: library.listX
             y: library.listTop
             width: library.listW
@@ -2074,18 +2402,27 @@ FocusScope {
             model: root.libraryEntries
             interactive: true
             boundsBehavior: Flickable.StopAtBounds
+            snapMode: ListView.SnapToItem
             highlightRangeMode: ListView.ApplyRange
             preferredHighlightBegin: library.rowH * 2
             preferredHighlightEnd: height - library.rowH * 2
             highlightMoveDuration: 0
             keyNavigationEnabled: false
             cacheBuffer: library.rowH * 6
+            function alignRows() {
+                // A restored selection and a stopped flick share the same row grid.
+                // Qt can move originY when delegates are resized, including text size changes.
+                contentY = originY + Math.max(0,Math.min(Math.max(0,contentHeight-height),Math.round((contentY-originY)/library.rowH)*library.rowH));
+            }
+            onMovementEnded: alignRows()
+            onHeightChanged: Qt.callLater(alignRows)
 
             delegate: Item {
                 width: libraryView.width
                 height: library.rowH
                 readonly property bool isCurrent: index === root.libIndex
                 readonly property string sortValue: Lib.sortValueText(modelData, root.sortMode, root.now)
+                readonly property bool titleElided: libraryRowTitle.truncated
 
                 Rectangle {
                     visible: parent.isCurrent && root.zone === "content"
@@ -2096,22 +2433,23 @@ FocusScope {
                     color: root.ink
                 }
                 Text {
+                    id: libraryRowTitle
                     x: px(24)
                     width: parent.width - px(24) - (valueText.visible ? valueText.implicitWidth + px(20) : 0)
                     anchors.verticalCenter: parent.verticalCenter
-                    text: modelData.title
+                    text: Lib.displayTitle(modelData)
                     color: parent.isCurrent ? root.ink : (modelData.launchable ? root.rowQuiet : root.rowFaint)
                     font.family: root.sans
                     font.pixelSize: fs(30)
                     font.weight: parent.isCurrent ? Font.DemiBold : Font.Normal
-                    elide: Text.ElideRight
+                    elide: modelData.editionLabel ? Text.ElideMiddle : Text.ElideRight
                 }
                 Text {
                     id: valueText
                     visible: text !== ""
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    text: parent.sortValue
+                    text: Lib.libraryBadge(modelData, parent.sortValue)
                     color: parent.isCurrent ? root.quiet : root.rowFaint
                     font.family: root.sans
                     font.pixelSize: fs(22)
@@ -2184,27 +2522,39 @@ FocusScope {
 
         // Nova: one quiet caption under the cover.
         Column {
+            id: libraryCaption
+            objectName: "libraryCaption"
             visible: !root.wide && root.libCurrent !== null
             x: library.panelX
-            y: library.panelBase + px(18)
-            width: root.width - library.panelX - px(48)
+            y: library.listBottom - height
+            width: root.width - library.panelX - px(64)
             spacing: px(4)
+            Text {
+                id: libraryTitle
+                objectName: "libraryFullTitle"
+                width: parent.width
+                visible: libraryView.currentItem ? libraryView.currentItem.titleElided : false
+                text: Lib.displayTitle(root.libCurrent)
+                color: root.ink; font.family: root.sans; font.pixelSize: fs(24)
+                wrapMode: Text.Wrap
+            }
             Text {
                 width: parent.width
                 visible: text !== ""
-                text: root.libCurrent ? root.libCurrent.developer : ""
+                text: root.libCurrent ? [Lib.consoleShortName({id:root.libCurrent.systemId,name:root.libCurrent.systemName}),root.libCurrent.developer].filter(function(x){return x;}).join(" · ") : ""
                 color: root.quiet
                 font.family: root.sans
                 font.pixelSize: fs(24)
-                elide: Text.ElideRight
+                wrapMode: Text.Wrap
             }
             Text {
+                objectName: "libraryQuietLine"
                 width: parent.width
                 text: root.quietLine(root.libCurrent, root.personalRev)
                 color: root.quiet
                 font.family: root.sans
                 font.pixelSize: fs(24)
-                elide: Text.ElideRight
+                wrapMode: Text.Wrap
             }
         }
 
@@ -2229,7 +2579,7 @@ FocusScope {
                 wrapMode: Text.Wrap
             }
             Repeater {
-                model: root.detailLines(root.libCurrent, root.personalRev)
+                model: root.wideSummaryLines(root.libCurrent, root.personalRev)
                 delegate: Text {
                     width: parent.width
                     text: modelData.t
@@ -2238,6 +2588,8 @@ FocusScope {
                     font.pixelSize: fs(24)
                     wrapMode: Text.Wrap
                     lineHeight: 1.1
+                    maximumLineCount: 2
+                    elide: Text.ElideRight
                 }
             }
         }
@@ -2254,7 +2606,7 @@ FocusScope {
         readonly property real listX: px(40)
         readonly property real listW: root.wide ? Math.round(root.width * 0.28) : px(420)
         readonly property real areaTop: px(120)
-        readonly property real areaBottom: root.height - px(104)
+        readonly property real areaBottom: root.usableHeight - px(104)
         readonly property real rowH: Math.round(fs(28) * 2.1)
         readonly property real panelX: listX + listW + px(48)
         readonly property real panelW: root.width - panelX - px(64)
@@ -2303,7 +2655,7 @@ FocusScope {
                     id: originText
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    text: Lib.originLabel(modelData)
+                    text: modelData.origin === "kept" || modelData.origin === "catalogue" ? Lib.originLabel(modelData) : ""
                     color: root.rowFaint
                     font.family: root.sans
                     font.pixelSize: fs(20)
@@ -2327,7 +2679,7 @@ FocusScope {
             spacing: px(12)
             visible: root.threads.length === 0
             Text {
-                text: "No threads yet."
+                text: "No collections yet."
                 color: root.ink
                 font.family: root.sans
                 font.pixelSize: fs(32)
@@ -2337,8 +2689,8 @@ FocusScope {
                 width: Math.min(parent.width, px(820))
                 wrapMode: Text.Wrap
                 text: root.bridge
-                      ? "Threads you keep and explained suggestions from the Device Library will appear here."
-                      : "Kept threads and suggestions come from the Device Library service, which this build doesn't have. Games you keep are still on Home."
+                      ? "Your collections and saved suggestions will appear here."
+                      : "Kept collections and suggestions come from the Device Library service, which this build doesn't have. Games you keep are still on Home."
                 color: root.quiet
                 font.family: root.sans
                 font.pixelSize: fs(24)
@@ -2387,9 +2739,8 @@ FocusScope {
                     var bits = [];
                     if (t.origin === "suggested") bits.push("A suggestion until you keep it");
                     if (t.origin === "catalogue") bits.push("Grouped in the catalogue export");
-                    if (t.source) bits.push("source: " + t.source);
-                    if (t.absent) bits.push(t.absent + (t.absent === 1 ? " game isn't" : " games aren't") + " in this library");
-                    return bits.join(", ") + (bits.length ? "." : "");
+                    if (t.absent) bits.push(t.absent + (t.absent === 1 ? " game isn't" : " games aren't") + " in this catalogue");
+                    return bits.join(". ") + (bits.length ? "." : "");
                 }
                 color: root.faint
                 font.family: root.sans
@@ -2430,12 +2781,12 @@ FocusScope {
                     x: px(24)
                     width: parent.width - px(24)
                     anchors.verticalCenter: parent.verticalCenter
-                    text: modelData.title
+                    text: Lib.displayTitle(modelData)
                     color: parent.focused ? root.ink : (modelData.launchable ? root.rowQuiet : root.rowFaint)
                     font.family: root.sans
                     font.pixelSize: fs(26)
                     font.weight: parent.focused ? Font.DemiBold : Font.Normal
-                    elide: Text.ElideRight
+                    elide: modelData.editionLabel ? Text.ElideMiddle : Text.ElideRight
                 }
                 MouseArea {
                     objectName: "memberRow_" + index
@@ -2458,9 +2809,9 @@ FocusScope {
             text: {
                 var e = root.threadMember;
                 var t = root.currentThread;
-                if (!e || !t) return "";
+                if (!e || !t || root.threadZone !== "members") return "";
                 if (t.origin === "recommendations")
-                    return e.recReason ? e.recReason + " (" + e.recSource + ")" : "Suggested by the " + e.recSource + ", with no reason given.";
+                    return e.recReason || "Suggested · no explanation provided.";
                 return root.quietLine(e, root.personalRev);
             }
             color: root.quiet
@@ -2502,8 +2853,9 @@ FocusScope {
 
         MouseArea { anchors.fill: parent }
 
-        readonly property real artBoxW: root.wide ? px(300) : px(260)
-        readonly property real artBoxH: root.wide ? px(450) : px(390)
+        // On 4:3 the cover keeps roughly its Library size instead of shrinking on entry.
+        readonly property real artBoxW: root.wide ? px(300) : px(400)
+        readonly property real artBoxH: root.wide ? px(450) : Math.min(px(600),root.usableHeight-px(64)-px(124))
 
         ArtView {
             id: detailArt
@@ -2523,12 +2875,13 @@ FocusScope {
 
         Flickable {
             id: detailFlick
+            objectName: "detailFacts"
             // Wide capsule art pushes the text below it instead of beside it.
-            readonly property bool below: detailArt.width > details.artBoxW * 1.05
+            readonly property bool below: root.width - px(128) - detailArt.width - px(48) < fs(480)
             x: below ? px(64) : px(64) + detailArt.width + px(48)
             y: below ? detailArt.y + detailArt.height + px(36) : px(64)
             width: root.width - x - px(64)
-            height: root.height - y - px(120)
+            height: root.usableHeight - y - px(120)
             contentHeight: detailColumn.height
             clip: true
             boundsBehavior: Flickable.StopAtBounds
@@ -2540,7 +2893,7 @@ FocusScope {
 
                 Text {
                     width: parent.width
-                    text: root.current ? root.current.title : ""
+                    text: Lib.displayTitle(root.current)
                     color: root.ink
                     font.family: root.sans
                     font.pixelSize: fs(40)
@@ -2549,28 +2902,39 @@ FocusScope {
                     maximumLineCount: 3
                     elide: Text.ElideRight
                 }
-                Text {
-                    width: parent.width
-                    visible: text !== ""
-                    text: root.current ? [root.current.developer, root.current.genre, root.current.systemName].filter(function(x) { return x; }).join(", ") : ""
-                    color: root.quiet
-                    font.family: root.sans
-                    font.pixelSize: fs(24)
-                    wrapMode: Text.Wrap
+                Item {
+                    objectName: "detailSystem"
+                    width: parent.width; height: systemLine.implicitHeight
+                    Icon {
+                        name: Lib.consoleCardGlyph(root.current ? root.current.systemId : "")
+                        width: fs(32); height: fs(24); alignX: 0
+                        y: (systemLine.font.pixelSize*1.2-height)/2; ink: root.quiet
+                    }
+                    Text {
+                        id: systemLine
+                        x: fs(36); width: parent.width-x
+                        text: root.current ? [Lib.consoleShortName({id:root.current.systemId,name:root.current.systemName}), root.current.developer, root.current.genre].filter(function(x) { return x; }).join(" · ") : ""
+                        color: root.quiet
+                        font.family: root.sans
+                        font.pixelSize: fs(24)
+                        wrapMode: Text.Wrap
+                    }
                 }
                 DeviceStates {
-                    visible: root.overlay === "details" && root.current && root.current.systemId !== "androidapps"
-                    entry: root.current; ink: root.ink; quiet: root.quiet; fontFamily: root.sans; size: fs(21)
+                    visible: root.overlay === "details" && root.current && !Lib.isApp(root.current)
+                    entry: root.current; ink: root.ink; quiet: root.quiet; fontFamily: root.sans; size: fs(21); textInset: fs(36)
                 }
                 Item { width: 1; height: px(8) }
                 Repeater {
-                    model: root.overlay === "facts" ? root.detailLines(root.current, root.personalRev) : root.overviewLines(root.current, root.personalRev)
+                    model: root.overlay === "facts" ? root.checkDetail
+                        ? [{ t: root.checkDetail.label, q: false }, { t: root.checkDetail.detail, q: false }, { t: "Recorded observations apply to this setup and scene; they do not guarantee other sessions.", q: true }]
+                        : root.detailLines(root.current, root.personalRev) : root.overviewLines(root.current, root.personalRev)
                     delegate: Item {
                         width: parent.width; height: lineText.implicitHeight
-                        Icon { visible: root.overlay === "details"; name: modelData.icon || "info"; width: fs(24); height: width; ink: modelData.q ? root.quiet : root.ink }
+                        Icon { visible: root.overlay === "details" && !!modelData.icon; name: modelData.icon || "info"; width: fs(24); height: width; y: (lineText.font.pixelSize*1.2-height)/2; ink: modelData.q ? root.quiet : root.ink }
                         Text {
                             id: lineText
-                            x: root.overlay === "details" ? fs(36) : 0
+                            x: root.overlay === "details" && !!modelData.icon ? fs(36) : 0
                             width: parent.width - x
                             text: modelData.t; color: modelData.q ? root.quiet : root.ink
                             font.family: root.sans; font.pixelSize: modelData.q ? fs(24) : fs(26)
@@ -2597,7 +2961,7 @@ FocusScope {
             id: panelHead
             x: px(64)
             y: px(64)
-            width: root.width - px(128)
+            width: root.width - px(128) - (panelPosition.visible ? panelPosition.width+px(24) : 0)
             text: root.panelTitle()
             maximumLineCount: 1
             elide: Text.ElideRight
@@ -2605,6 +2969,15 @@ FocusScope {
             font.family: root.sans
             font.pixelSize: fs(40)
             font.weight: Font.DemiBold
+        }
+
+        Text {
+            id: panelPosition
+            visible: panelList.count * panel.rowH > panelList.height+1
+            anchors.right: parent.right; anchors.rightMargin: px(64)
+            anchors.verticalCenter: panelHead.verticalCenter
+            text: (root.panelIndex+1) + " / " + panelList.count
+            color: root.quiet; font.family: root.sans; font.pixelSize: fs(22)
         }
 
         CapacityBar {
@@ -2619,10 +2992,12 @@ FocusScope {
         }
         ListView {
             id: panelList
-            x: px(64)
+            objectName: "panelList"
+            x: px(40)
             y: root.overlay === "storage" ? diskCapacity.y + diskCapacity.height + px(20) : panelHead.y + panelHead.height + px(34)
-            width: Math.min(root.width - px(128), px(860))
-            height: Math.min(count * panel.rowH, Math.floor((root.height - px(300) - y) / panel.rowH) * panel.rowH)
+            width: Math.min(root.width - px(104), px(884))
+            // The explanation's actual wrapped height determines its reserve.
+            height: Math.max(panel.rowH,Math.min(count * panel.rowH, Math.floor((root.usableHeight - px(128) - panelExplanation.implicitHeight - y) / panel.rowH) * panel.rowH))
             clip: true
             model: panel.visible ? root.panelRows(root.personalRev) : []
             currentIndex: root.panelIndex
@@ -2675,15 +3050,44 @@ FocusScope {
         }
 
         Text {
+            id: panelExplanation
+            objectName: "panelExplanation"
             x: px(64)
             y: panelList.y + panelList.height + px(28)
             width: Math.min(root.width - px(128), px(860))
             wrapMode: Text.Wrap
             text: root.panelFooter(root.personalRev)
-            color: root.faint
+            textFormat: Text.PlainText
+            color: root.quiet
             font.family: root.sans
             font.pixelSize: fs(24)
         }
+    }
+
+    StoppingNotebook {
+        id:notebookPanel
+        anchors.fill:parent;visible:root.overlay === "notebook"
+        enabled:root.enabled && visible
+        storage:root.notebookBridge;keyMap:api.keys;legacyEditable:root.canEdit && (!root.current || !root.current.cloudId)
+        ground:root.ground;ink:root.ink;quiet:root.quiet;slab:root.slab
+        fontFamily:root.sans;unit:root.s;textScale:root.textScale;bottomLimit:root.usableHeight
+        onEditCheckpoint:root.openText("checkpoint",editionId)
+        onChanged:root.loadStoppingCard(root.entryById[editionId],true)
+        onClosed:{root.overlay=root.overlayReturn === "details"?"details":"";root.overlayReturn="";root.forceActiveFocus();root.dropKeyboard();}
+    }
+
+    ControllerCheck {
+        id: controllerPanel
+        anchors.fill: parent
+        visible: root.overlay === "controller"
+        check: root.controllerBridge
+        keyMap: api.keys
+        ground: root.ground; ink: root.ink; quiet: root.quiet; faint: root.faint; slab: root.slab
+        warning: root.light ? "#955100" : "#dca56a"
+        fontFamily: root.sans; monoFamily: global.fonts.mono || ""
+        unit: root.s; textScale: root.textScale; wide: root.wide
+        bottomLimit: root.usableHeight - px(76) - px(20)
+        onClosed: { root.overlay = "settings"; root.panelIndex = root.settingsIndex; }
     }
 
     // ---------- A line of text: checkpoint or thread name ----------
@@ -2702,7 +3106,7 @@ FocusScope {
             spacing: px(14)
 
             Text {
-                text: root.textMode === "checkpoint" ? "Stopping note" : "New thread"
+                text: root.textMode === "checkpoint" ? "Stopping note" : "New collection"
                 color: root.ink
                 font.family: root.sans
                 font.pixelSize: fs(40)
@@ -2787,12 +3191,15 @@ FocusScope {
     // ---------- Button hints ----------
 
     Item {
+        objectName: "buttonHints"
         x: px(64)
-        y: root.height - px(76)
+        y: root.usableHeight - px(76)
         width: root.width - px(128)
         height: fs(32)
 
         Row {
+            id: primaryHints
+            objectName: "primaryHints"
             spacing: px(40)
             visible: root.overlay !== "details"
             Repeater {
@@ -2803,18 +3210,19 @@ FocusScope {
                     Row {
                         id: hintRow
                         spacing: px(10)
-                        Text {
-                            text: modelData.k
-                            color: root.ink
-                            font.family: root.sans
-                            font.pixelSize: fs(24)
-                            font.weight: Font.DemiBold
+                        KeyCap {
+                            label: modelData.k; ink: root.ink; ground: root.ground
+                            fontFamily: root.sans; textSize: fs(21)
+                            primary: modelData.a === "play" || modelData.a === "console" || modelData.a === "openthread" || modelData.a === "setup"
+                                     || modelData.a === "controller:start" || modelData.a === "controller:stop"
+                                     || root.overlay === "settings" && modelData.a === "panel"
                         }
                         Text {
                             text: modelData.l
-                            color: root.quiet
+                            color: index === 0 ? root.ink : root.quiet
                             font.family: root.sans
                             font.pixelSize: fs(24)
+                            anchors.verticalCenter: parent.verticalCenter
                         }
                     }
                     MouseArea {
@@ -2828,18 +3236,49 @@ FocusScope {
         }
 
         // Details: the actions themselves, one in focus.
-        Row {
-            spacing: px(36)
-            visible: root.overlay === "details" || root.overlay === "facts"
-            Repeater {
-                model: root.overlay === "details" ? root.detailActions() : []
+        ListView {
+            id: detailActionList
+            objectName: "detailActions"
+            x: 0
+            width: Math.max(1, parent.width - Math.max(footerNotice.visible ? footerNotice.width : 0,
+                detailsHint.visible ? detailsHint.width : 0) - px(76))
+            height: fs(40)
+            spacing: px(28)
+            orientation: ListView.Horizontal
+            visible: root.overlay === "details"
+            clip: true
+            keyNavigationEnabled: false
+            boundsBehavior: Flickable.StopAtBounds
+            highlightRangeMode: ListView.ApplyRange
+            preferredHighlightBegin: 0
+            preferredHighlightEnd: width
+            highlightMoveDuration: 0
+            currentIndex: root.detailAction
+            model: root.overlay === "details" ? root.detailActions() : []
+            // ApplyRange tracks the highlight point; long action labels can still
+            // extend past the viewport. Keep the whole selected action in view.
+            function containCurrent() {
+                Qt.callLater(function() {
+                    if (!detailActionList.visible || detailActionList.currentIndex < 0) return;
+                    detailActionList.forceLayout();
+                    detailActionList.positionViewAtIndex(detailActionList.currentIndex,ListView.Contain);
+                });
+            }
+            onCurrentIndexChanged: containCurrent()
+            onWidthChanged: containCurrent()
+            onModelChanged: containCurrent()
                 delegate: Item {
-                    width: actionLabel.implicitWidth
+                    width: Math.min(actionLabel.implicitWidth, detailActionList.width)
                     height: fs(32)
                     readonly property bool isCurrent: index === root.detailAction
+                    // Continuation arrows represent off-screen actions; never bisect a word.
+                    opacity: x >= detailActionList.contentX-1 && x+width <= detailActionList.contentX+detailActionList.width+1 ? 1 : 0
+                    enabled: opacity === 1
                     Text {
                         id: actionLabel
+                        width: parent.width
                         text: modelData.l
+                        elide: Text.ElideRight
                         color: parent.isCurrent ? root.ink : root.quiet
                         font.family: root.sans
                         font.pixelSize: fs(24)
@@ -2849,7 +3288,7 @@ FocusScope {
                         visible: parent.isCurrent
                         anchors.top: actionLabel.bottom
                         anchors.topMargin: px(4)
-                        width: actionLabel.width
+                        width: parent.width
                         height: Math.max(2, px(3))
                         color: root.ink
                     }
@@ -2860,10 +3299,21 @@ FocusScope {
                         onClicked: root.runDetailAction(index)
                     }
                 }
+        }
+
+        Repeater {
+            model: [false,true]
+            delegate: Item {
+                visible: detailActionList.visible && (modelData ? detailActionList.contentX+detailActionList.width < detailActionList.contentWidth-1 : detailActionList.contentX > 1)
+                x: modelData ? detailActionList.x+detailActionList.width+px(5) : -px(22)
+                width: px(16); height: fs(32)
+                Icon { name:"back"; width:px(16); height:width; anchors.verticalCenter:parent.verticalCenter; rotation:modelData ? 180 : 0; ink:root.quiet }
+                MouseArea { anchors.fill:parent; anchors.margins:-px(5); onClicked:root.detailAction=Math.max(0,Math.min(root.detailActions().length-1,root.detailAction+(modelData?1:-1))) }
             }
         }
 
         Text {
+            id: footerNotice
             anchors.right: parent.right
             visible: root.notice !== ""
             width: Math.min(implicitWidth, parent.width * 0.5)
@@ -2875,24 +3325,36 @@ FocusScope {
             font.pixelSize: fs(22)
         }
 
-        Text {
+        Row {
+            id: detailsHint
             anchors.right: parent.right
             visible: root.notice === "" && root.overlay === "details"
-            text: root.kAccept + "  Select    " + root.kCancel + "  Back"
-            color: root.faint
-            font.family: root.sans
-            font.pixelSize: fs(24)
-            MouseArea {
-                objectName: "detailsBack"
-                anchors.fill: parent
-                anchors.margins: -px(14)
-                onClicked: root.overlay = ""
+            spacing: px(26)
+            Repeater {
+                model: [{key:root.kAccept,label:"Select",action:"select"},{key:root.kCancel,label:"Back",action:"back"}]
+                delegate: Item {
+                    width: detailsHintRow.implicitWidth; height: fs(32)
+                    Row {
+                        id: detailsHintRow
+                        spacing: px(10)
+                        KeyCap { label:modelData.key; primary:modelData.action==="select"; ink:modelData.action==="select" ? root.ink : root.quiet; ground:root.ground; fontFamily:root.sans; textSize:fs(21) }
+                        Text { visible:text !== ""; text:modelData.label; color:root.quiet; font.family:root.sans; font.pixelSize:fs(24); anchors.verticalCenter:parent.verticalCenter }
+                    }
+                    MouseArea {
+                        objectName: modelData.action === "back" ? "detailsBack" : "detailsSelect"
+                        anchors.fill: parent; anchors.margins: -px(10)
+                        onClicked: modelData.action === "back" ? root.closeOverlay() : root.runDetailAction(root.detailAction)
+                    }
+                }
             }
         }
 
         Row {
+            id: pageHints
+            objectName: "pageHints"
             anchors.right: parent.right
-            visible: root.notice === "" && root.overlay === ""
+            // Primary and reverse actions take precedence when labels are long.
+            visible: root.notice === "" && root.overlay === "" && primaryHints.width+width+px(24) <= parent.width
             spacing: px(28)
             Text {
                 visible: root.view !== "home"
@@ -2921,5 +3383,20 @@ FocusScope {
                 }
             }
         }
+    }
+    CloudLibrary {
+        id: cloudPanel
+        anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+        height: root.usableHeight
+        visible: root.overlay === "cloud"
+        cloud: root.cloudBridge
+        keyMap: api.keys
+        ground: root.ground
+        ink: root.ink
+        quiet: root.quiet
+        fontFamily: root.sans
+        textScale: root.textScale
+        slab: root.slab
+        onClosed: root.closeCloud()
     }
 }

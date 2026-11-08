@@ -1,0 +1,38 @@
+name: Source contracts
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - name: Python source and build-receipt contracts
+        run: python3 -m unittest discover -s tests -v
+      - name: QML JavaScript helpers
+        run: node --test tests/*.cjs
+      - name: Source privacy and whitespace
+        run: |
+          python3 tools/privacy_scan.py
+          git diff --check
+      - name: Fresh pinned native source and external theme
+        run: |
+          git init "$RUNNER_TEMP/pegasus-upstream"
+          git -C "$RUNNER_TEMP/pegasus-upstream" remote add origin https://github.com/mmatyas/pegasus-frontend.git
+          git -C "$RUNNER_TEMP/pegasus-upstream" fetch --depth 1 origin 5d58223e58f84afb31d5d14a67438841b981a6fa
+          git -C "$RUNNER_TEMP/pegasus-upstream" checkout --detach FETCH_HEAD
+          git -C "$RUNNER_TEMP/pegasus-upstream" submodule update --init --recursive
+          python3 tools/prepare_native.py prepare "$RUNNER_TEMP/pegasus-upstream" --output "$RUNNER_TEMP/nova-paired" --rom-cloud
+          python3 tools/prepare_native.py verify "$RUNNER_TEMP/nova-paired"

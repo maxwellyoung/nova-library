@@ -249,7 +249,7 @@ index 0000000..f649ce7
 +    }
 +}
 diff --git a/src/app/platform/android/src/org/pegasus_frontend/android/MainActivity.java b/src/app/platform/android/src/org/pegasus_frontend/android/MainActivity.java
-index 9eedd0b..ef5536f 100644
+index 9eedd0b..39dc7ef 100644
 --- a/src/app/platform/android/src/org/pegasus_frontend/android/MainActivity.java
 +++ b/src/app/platform/android/src/org/pegasus_frontend/android/MainActivity.java
 @@ -246,7 +246,31 @@ public class MainActivity extends org.qtproject.qt5.android.bindings.QtActivity
@@ -285,7 +285,7 @@ index 9eedd0b..ef5536f 100644
          }
          catch (Exception e) {
              return e.toString() + ": " + e.getMessage();
-@@ -258,7 +282,7 @@ public class MainActivity extends org.qtproject.qt5.android.bindings.QtActivity
+@@ -258,8 +282,22 @@ public class MainActivity extends org.qtproject.qt5.android.bindings.QtActivity
      public static String toContentUri(String path) {
          final Uri uri = FileProvider.getUriForFile(
              m_self,
@@ -294,6 +294,161 @@ index 9eedd0b..ef5536f 100644
              new File(path));
          return uri.toString();
      }
++    private final QtSurfaceOrder m_surfaceOrder = new QtSurfaceOrder();
++
++    @Override public void onContentChanged() {
++        super.onContentChanged();
++        // Verified Android 13 Window-hole bypass; other runtimes retain Qt order.
++        m_surfaceOrder.bind(findViewById(android.R.id.content),
++            Build.VERSION.SDK_INT == 33 && getApplicationInfo().targetSdkVersion >= 30);
++    }
++
++    @Override protected void onDestroy() {
++        m_surfaceOrder.close();
++        super.onDestroy();
++    }
++
+ }
+diff --git a/src/app/platform/android/src/org/pegasus_frontend/android/QtSurfaceOrder.java b/src/app/platform/android/src/org/pegasus_frontend/android/QtSurfaceOrder.java
+new file mode 100644
+index 0000000..9bedd4e
+--- /dev/null
++++ b/src/app/platform/android/src/org/pegasus_frontend/android/QtSurfaceOrder.java
+@@ -0,0 +1,134 @@
++package org.pegasus_frontend.android;
++
++import android.util.Log;
++import android.content.Context;
++import android.view.SurfaceView;
++import android.view.View;
++import android.view.ViewGroup;
++import android.view.ViewTreeObserver;
++import android.view.accessibility.AccessibilityManager;
++import org.qtproject.qt5.android.QtEditText;
++import org.qtproject.qt5.android.QtLayout;
++import org.qtproject.qt5.android.QtSurface;
++import org.qtproject.qt5.android.accessibility.QtAccessibilityDelegate;
++
++/** Android 13 compositor bypass for the single full-layout Qt Quick surface. */
++final class QtSurfaceOrder implements ViewTreeObserver.OnGlobalLayoutListener,
++        AccessibilityManager.TouchExplorationStateChangeListener {
++    private ViewGroup layout;
++    private SurfaceView raised;
++    private String lastReason;
++    private AccessibilityManager accessibility;
++    private boolean explorationObserved;
++
++    void bind(View content, boolean supported) {
++        ViewGroup next = supported ? findLayout(content) : null;
++        if (next != layout) {
++            close();
++            layout = next;
++            if (layout != null) {
++                accessibility = (AccessibilityManager) layout.getContext()
++                        .getSystemService(Context.ACCESSIBILITY_SERVICE);
++                explorationObserved = accessibility != null
++                        && accessibility.addTouchExplorationStateChangeListener(this);
++                layout.getViewTreeObserver().addOnGlobalLayoutListener(this);
++            }
++        }
++        if (layout != null)
++            onGlobalLayout();
++        else
++            reason(supported ? "No Qt layout" : "Runtime outside verified scope");
++    }
++
++    private boolean isQtAccessibilityHost(View child) {
++        View.AccessibilityDelegate delegate = child.getAccessibilityDelegate();
++        // Qt 5.15.10 creates this exact transparent View for virtual nodes and
++        // hover routing. Other Views, delegates and drawable hosts still block.
++        return child.getClass() == View.class && child.getId() == View.NO_ID
++                && delegate != null && delegate.getClass() == QtAccessibilityDelegate.class
++                && child.getBackground() == null && child.getForeground() == null
++                && child.getLeft() == 0 && child.getTop() == 0
++                && child.getWidth() == layout.getWidth()
++                && child.getHeight() == layout.getHeight();
++    }
++
++    private static ViewGroup findLayout(View content) {
++        if (content == null) return null;
++        if (content.getClass() == QtLayout.class) return (ViewGroup) content;
++        if (!(content instanceof ViewGroup)) return null;
++        ViewGroup root = (ViewGroup) content;
++        ViewGroup found = null;
++        for (int i = 0; i < root.getChildCount(); ++i) {
++            View child = root.getChildAt(i);
++            if (child.getClass() == QtLayout.class) {
++                if (found != null) return null;
++                found = (ViewGroup) child;
++            }
++        }
++        return found;
++    }
++
++    @Override public void onGlobalLayout() {
++        if (layout == null) return;
++        SurfaceView candidate = null;
++        int surfaces = 0;
++        boolean nativeChild = false;
++        for (int i = 0; i < layout.getChildCount(); ++i) {
++            View child = layout.getChildAt(i);
++            if (child.getClass() == QtSurface.class) {
++                candidate = (SurfaceView) child;
++                ++surfaces;
++            } else if (child.getClass() != QtEditText.class && !isQtAccessibilityHost(child)) {
++                // Unknown native children keep the ordinary Window stacking even
++                // while hidden; later visibility changes cannot expose an overlay.
++                nativeChild = true;
++            }
++        }
++        boolean fullLayout = candidate != null && layout.getWidth() > 0 && layout.getHeight() > 0
++                && candidate.getLeft() == 0 && candidate.getTop() == 0
++                && candidate.getWidth() == layout.getWidth()
++                && candidate.getHeight() == layout.getHeight();
++        boolean exploring = accessibility != null && accessibility.isTouchExplorationEnabled();
++        String why;
++        if (!explorationObserved) why = "Accessibility state is not observed";
++        else if (exploring) why = "Touch exploration keeps ordinary surface order";
++        else if (nativeChild) why = "Native child keeps ordinary surface order";
++        else if (surfaces != 1) why = "Requires one Qt surface";
++        else if (!fullLayout)
++            why = "Requires full-layout Qt surface";
++        else why = "Single full-layout Qt surface above Window";
++        SurfaceView next = explorationObserved && !exploring && !nativeChild
++                && surfaces == 1 && fullLayout ? candidate : null;
++        if (raised != next) {
++            if (raised != null) raised.setZOrderOnTop(false);
++            if (next != null) next.setZOrderOnTop(true);
++            raised = next;
++        }
++        reason(why);
++    }
++
++    @Override public void onTouchExplorationStateChanged(boolean enabled) {
++        // A real public accessibility-state event, including transitions without
++        // a layout pass. Preserve the delegate and its hover/input routing.
++        onGlobalLayout();
++    }
++
++    void close() {
++        if (accessibility != null && explorationObserved)
++            accessibility.removeTouchExplorationStateChangeListener(this);
++        accessibility = null;
++        explorationObserved = false;
++        if (layout != null && layout.getViewTreeObserver().isAlive())
++            layout.getViewTreeObserver().removeOnGlobalLayoutListener(this);
++        if (raised != null) raised.setZOrderOnTop(false);
++        raised = null;
++        layout = null;
++    }
++
++    private void reason(String value) {
++        if (!value.equals(lastReason)) {
++            Log.i("NovaSurfaceOrder", value);
++            lastReason = value;
++        }
++    }
++}
 diff --git a/src/backend/CMakeLists.txt b/src/backend/CMakeLists.txt
 index 08de0be..ea9f75e 100644
 --- a/src/backend/CMakeLists.txt
@@ -590,7 +745,7 @@ index 0000000..5f6b8ee
 +    for (auto it = a.constBegin(); it != a.constEnd(); ++it) if (!keys.contains(it.key())) return failure("unexpected_field");
 +    if ((edition || type == "thread-membership") && !identifier(a.value("editionId"))) return failure("invalid_edition_id");
 +    if (type == "checkpoint" && (a.value("text").userType() != QMetaType::QString || a.value("text").toString().size() > 4000 || a.value("text").toString().contains(QChar(0)))) return failure("invalid_checkpoint");
-+    if (type == "status" && !QStringList({"unknown", "backlog", "playing", "finished", "abandoned"}).contains(a.value("status").toString())) return failure("invalid_status");
++    if (type == "status" && !QStringList({"unknown", "backlog", "playing", "paused", "finished", "abandoned"}).contains(a.value("status").toString())) return failure("invalid_status");
 +    if (type == "pin" && a.value("pinned").userType() != QMetaType::Bool) return failure("invalid_pin");
 +    if ((type == "thread-create" || type == "thread-keep") && (!identifier(a.value("name")) || a.value("name").toString().size() > 160)) return failure("invalid_thread_name");
 +    if (type == "thread-keep") {
@@ -652,7 +807,7 @@ index 0000000..5f6b8ee
 +    if (entries.size() > 10000) return false;
 +    for (auto it = entries.begin(); it != entries.end(); ++it) {
 +        const QVariantMap e = it.value().toObject().toVariantMap();
-+        if (!identifier(it.key()) || !ids.contains(it.key()) || !it.value().isObject() || !e.contains("checkpoint") || !revision(e.value("revision")) || (e.contains("checkpoint") && !e.value("checkpoint").isNull() && e.value("checkpoint").userType() != QMetaType::QString) || !QStringList({"unknown", "backlog", "playing", "finished", "abandoned"}).contains(e.value("status").toString())) { setState("error", "Invalid personal entry"); return false; }
++        if (!identifier(it.key()) || !ids.contains(it.key()) || !it.value().isObject() || !e.contains("checkpoint") || !revision(e.value("revision")) || (e.contains("checkpoint") && !e.value("checkpoint").isNull() && e.value("checkpoint").userType() != QMetaType::QString) || !QStringList({"unknown", "backlog", "playing", "paused", "finished", "abandoned"}).contains(e.value("status").toString())) { setState("error", "Invalid personal entry"); return false; }
 +    }
 +    for (const QJsonValue& v : p.value("threads").toArray()) {
 +        const QJsonObject t = v.toObject();
@@ -1211,7 +1366,7 @@ new file mode 100644
 index 0000000..8815448
 --- /dev/null
 +++ b/src/backend/library/tst_DeviceLibrary.cpp
-@@ -0,0 +1,100 @@
+@@ -0,0 +1,117 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +#include "DeviceLibrary.h"
 +#include <QtTest>
@@ -1229,6 +1384,23 @@ index 0000000..8815448
 +    Enrollment enrollment() { Enrollment e; e.deviceId = "test"; return e; }
 +    QByteArray ack(const QString& id, int rev=1) { return QJsonDocument::fromVariant(QVariantMap{{"ok",true},{"queued",false},{"actionId",id},{"receivedAt",1},{"revision",rev}}).toJson(); }
 +private slots:
++    void pausedOfflineRestartAndAcknowledgement() {
++        QTemporaryDir dir; const QString path=dir.path()+"/paused.sqlite";
++        { DeviceLibrary lib(path,enrollment()); QVERIFY(lib.acceptSnapshot(seed()));
++          QVERIFY(lib.act({{"type","status"},{"editionId","game"},{"status","paused"},{"actionId","pause"}}).value("queued").toBool());
++          QCOMPARE(entry(lib).value("status").toString(),QString("paused")); }
++        DeviceLibrary lib(path,enrollment());
++        QCOMPARE(entry(lib).value("status").toString(),QString("paused"));
++        QCOMPARE(entry(lib).value("checkpoint").toString(),QString("before"));
++        QVERIFY(lib.acceptReceipt("pause",ack("pause")));
++        auto snapshot=QJsonDocument::fromJson(seed("before",1)).object(); auto personal=snapshot["personal"].toObject();
++        auto entries=personal["entries"].toObject(); auto game=entries["game"].toObject(); game["status"]="paused";
++        entries["game"]=game;personal["entries"]=entries;snapshot["personal"]=personal;
++        QVERIFY(lib.acceptSnapshot(QJsonDocument(snapshot).toJson()));
++        QCOMPARE(entry(lib).value("status").toString(),QString("paused")); QVERIFY(lib.nextAction().isEmpty());
++        QVERIFY(!lib.act({{"type","status"},{"editionId","game"},{"status","invented"}}).value("ok").toBool());
++        QCOMPARE(entry(lib).value("status").toString(),QString("paused"));
++    }
 +    void offlineRestart() {
 +        QTemporaryDir dir; const QString path=dir.path()+"/db.sqlite";
 +        QByteArray action;

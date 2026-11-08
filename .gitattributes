@@ -1,2 +1,5 @@
-# Patch context must retain its literal whitespace for application.
-native/*.patch -whitespace
+# Preserve pinned third-party originals byte-for-byte, including their line endings.
+assets/platforms/*.svg whitespace=cr-at-eol
+assets/platforms/RetroArch-COPYING.txt whitespace=-blank-at-eol,-blank-at-eof
+# A unified patch's blank context line is one intentional space.
+native/hakux/*.patch whitespace=-blank-at-eol

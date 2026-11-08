@@ -12,7 +12,7 @@ from pathlib import Path
 
 SKIP_DIRS = {'.git', '.venv', '__pycache__', 'node_modules', 'runtime', 'input',
              'library', 'evidence', 'outputs', 'build'}
-FORBIDDEN_SUFFIXES = {'.apk', '.aab', '.db', '.sqlite', '.log', '.vault', '.pem', '.key', '.mp4', '.png', '.jpg'}
+FORBIDDEN_SUFFIXES = {'.apk', '.aab', '.db', '.sqlite', '.log', '.vault', '.pem', '.key', '.mp4', '.png', '.jpg', '.nvs'}
 RULES = {
     'machine path': re.compile(r'/(?:Users|Volumes)/[^\s"\'<>]+'),
     'private chat': re.compile(r'Discord ' + r'thread|team ' + r'comms|BEGIN ' + r'PRIVATE KEY|BEGIN ' + r'OPENSSH PRIVATE KEY', re.I),

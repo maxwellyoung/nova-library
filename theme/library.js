@@ -2,11 +2,12 @@
 
 // Pure helpers for the Personal Library theme. No QML objects are created here.
 
-var STATUSES = ["unknown", "backlog", "playing", "finished", "abandoned"];
+var STATUSES = ["unknown", "backlog", "playing", "paused", "finished", "abandoned"];
 var STATUS_LABELS = {
     unknown: "No status",
     backlog: "Backlog",
     playing: "Playing",
+    paused: "Paused",
     finished: "Finished",
     abandoned: "Left behind"
 };
@@ -19,6 +20,8 @@ var SORT_LABELS = {
 };
 var DEVICES = ["", "here", "nova", "legion"];
 var DEVICE_LABELS = { "": "Any device", here: "Route here", nova: "Route on Nova", legion: "Route on Legion" };
+var ASPECTS = ["", "original-4-3", "native-4-3", "stretch-only", "unverified"];
+var ASPECT_LABELS = {"":"Any aspect", "original-4-3":"Originally 4:3", "native-4-3":"Native 4:3 tested", "stretch-only":"Stretch-only setup", unverified:"Setup unconfirmed"};
 
 // Pegasus stores every x-field as a string list. Join it back into one string.
 function extra(game, key) {
@@ -145,6 +148,13 @@ function dateEvidenceText(raw) {
     return stamp === null ? "Date unknown" : utcDateText(stamp);
 }
 
+function observationText(raw) {
+    return String(raw || "").replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})/g, function(value) {
+        var formatted = dateEvidenceText(value);
+        return formatted === "Date unknown" ? value : formatted;
+    });
+}
+
 function bytesText(n) {
     if (n === null || n === undefined) return "Unknown";
     var units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -178,7 +188,10 @@ function storageSummary(entries) {
         if (e.catalogueGeneratedAt !== null && e.catalogueGeneratedAt !== undefined)
             out.exported = out.exported === null ? e.catalogueGeneratedAt : Math.max(out.exported, e.catalogueGeneratedAt);
     });
-    out.groups.sort(function(a, b) { return a.name.localeCompare(b.name); });
+    out.groups.sort(function(a, b) {
+        if (!!a.known !== !!b.known) return a.known ? -1 : 1;
+        return b.bytes - a.bytes || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+    });
     out.largest.sort(function(a, b) { return b.sizeBytes - a.sizeBytes || a.title.localeCompare(b.title); });
     return out;
 }
@@ -274,11 +287,53 @@ function discReadyCount(e) {
 var REGION_TAG = /\s*(\[[^\]]*\]|\((USA|U|Europe|E|Japan|J|World|W|PSN|PSP|En(,[A-Z][a-z])*|Rev \w+|v\d[\d.]*)\))\s*$/;
 
 function cleanTitle(raw) {
-    var t = String(raw || ""), prev;
+    var t = String(raw || "").replace(/\.nkit$/i, ""), prev;
     var disc = /\s*\(Disc \d+\)\s*$/.exec(t);
     if (disc) t = t.slice(0, disc.index);
+    // Known GameCube pack suffix, not arbitrary parentheses or edition names.
+    t = t.replace(/\s+\((?:EU|USA|Europe|Japan|World)\)\s+\((?:19|20)\d{2}\)\s+\([^()]{1,50}\)\s+\(GameCube\)$/, "");
     do { prev = t; t = t.replace(REGION_TAG, ""); } while (t !== prev && t);
     return t ? t + (disc ? " " + disc[0].trim() : "") : String(raw || "");
+}
+
+function editionFileLabel(game) {
+    var files = game.files, path = "";
+    if (files && files.count > 0 && typeof files.get === "function") path = String(files.get(0).path || "");
+    var raw = path || String(game.title || "");
+    var region = /\((USA(?:, Canada)?|Europe|Japan|World|EU)\)/i.exec(raw);
+    var format = /\.nkit(?:\.iso)?$/i.test(raw) ? "NKit"
+               : /\.(ciso|iso|rvz|chd|cue|bin|m3u)$/i.exec(raw);
+    if (format && typeof format !== "string") format = format[1].toUpperCase();
+    return [region ? region[1].replace(/, /g, "/") : "", format || ""].filter(function(s) { return s; }).join(" · ");
+}
+
+// Distinguish choices without merging files, changing edition IDs or affecting guide matching.
+function distinguishEditions(entries) {
+    var groups = {};
+    entries.forEach(function(e) {
+        e.editionLabel = "";
+        var key = "$" + e.systemId + "|" + e.title.toLowerCase();
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(e);
+    });
+    Object.keys(groups).forEach(function(key) {
+        var group = groups[key];
+        if (group.length < 2) return;
+        var counts = {};
+        group.forEach(function(e) {
+            e.editionLabel = e.cloudId ? "Cloud copy" : editionFileLabel(e.game);
+            var hint = "$" + e.editionLabel;
+            counts[hint] = (counts[hint] || 0) + 1;
+        });
+        group.slice().sort(function(a,b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; }).forEach(function(e, i) {
+            if (!e.editionLabel || counts["$" + e.editionLabel] > 1)
+                e.editionLabel += (e.editionLabel ? " · " : "") + "Copy " + (i + 1);
+        });
+    });
+}
+
+function displayTitle(e) {
+    return e ? e.title + (e.editionLabel ? " · " + e.editionLabel : "") : "";
 }
 
 function makeEntry(game) {
@@ -319,11 +374,16 @@ function makeEntry(game) {
         novaGameplayObservedAt: extra(game, "nova-gameplay-observed-at"),
         displayAspect: extra(game, "display-aspect"),
         displayAspectSource: extra(game, "display-aspect-source"),
+        originalAspect: extra(game, "original-aspect"),
+        originalAspectSource: extra(game, "original-aspect-source"),
         genre: game.genre || "",
         home: extra(game, "home") === "true",
         launchable: extra(game, "launchable") === "true" && !game.missing,
         missing: game.missing,
         route: extra(game, "route-label"),
+        sessionProfile: extra(game, "session-profile"),
+        compatibilityRecipeId: extra(game, "compatibility-recipe-id"),
+        compatibilityReceipts: extra(game, "compatibility-receipts"),
         discAliasFor: extra(game, "disc-alias-for"),
         discSetId: extra(game, "disc-set-id"),
         discSetName: cleanTitle(extra(game, "disc-set-name")),
@@ -371,6 +431,93 @@ function indexOfId(list, id) {
     return -1;
 }
 
+// Only the native client supplies these origin/content-bound identities. A title
+// match never attaches a cloud copy to an existing edition or its saved progress.
+function cloudEntry(game, history) {
+    if (!game || typeof game.id !== "number" || game.id <= 0 || Math.floor(game.id) !== game.id) return null;
+    var id = str(game.editionId), match = /^nova:cloud_([a-f0-9]{64}):([1-9][0-9]*)_[a-f0-9]{64}$/.exec(id);
+    if (!match || Number(match[2]) !== game.id || game.cloudKey !== "cloud:" + match[1] + ":" + game.id) return null;
+    var platform = str(game.platform), system = platform === "ps" ? "psx" : platform;
+    if (!/^[a-z0-9_-]{1,40}$/.test(system) || ["androidapps","emulators"].indexOf(system)!==-1) return null;
+    var installed = game.installed === true;
+    var nativeGame = {
+        title: str(game.title).slice(0,300), missing: !installed, assets: {}, files: {count:0},
+        extra: {"edition-id":[id], "system-id":[system], "system-name":[str(game.system)],
+            "launchable":[installed ? "true" : "false"], "catalog-source":["Private cloud catalogue"],
+            "route-label":[installed ? "RetroArch" : ""]}
+    };
+    var entry = makeEntry(nativeGame);
+    entry.cloudId = game.id; entry.cloudKey = game.cloudKey;
+    entry.cloudSupported = game.supported === true; entry.cloudPartial = game.partial === true;
+    entry.cloudResumeAvailable = game.resumeAvailable === true;
+    entry.cloudDownloadBlocked = game.downloadBlocked === true;
+    entry.cloudDownloadState = str(game.downloadState);
+    entry.cloudDownloadReason = str(game.downloadReason);
+    entry.cloudCopyChanged = game.cloudCopyChanged === true;
+    entry.editionLabel = "Cloud copy";
+    entry.art = typeof game.cover === "string" && game.cover.indexOf("file:") === 0 ? game.cover : "";
+    entry.sizeBytes = fileBytes(game.bytes);
+    entry.installations = {nova:{state:installed ? "installed" : game.partial === true ? "partial" : "absent",
+        observedAt:str(game.observedAt), source:"Managed cloud download file check", scopeComplete:true}};
+    entry.readyDevices = installed ? ["nova"] : [];
+    var opened = history && history[id];
+    if (typeof opened === "number" && isFinite(opened) && opened > 0) entry.lastPlayedHere = opened;
+    return entry;
+}
+
+function mergeCloudEntries(entries, games, history) {
+    var result = entries.slice(), seen = {};
+    result.forEach(function(e){seen[e.id]=true;});
+    (games || []).forEach(function(g) {
+        var e=cloudEntry(g,history);
+        if(e && !seen[e.id]) {e.order=result.length;result.push(e);seen[e.id]=true;}
+    });
+    return result;
+}
+
+function cloudSignature(games) {
+    return JSON.stringify((games || []).map(function(g) {
+        return [g.editionId,g.cloudKey,g.title,g.system,g.platform,g.installed,g.partial,g.cover,g.supported,g.cloudCopyChanged,g.resumeAvailable,g.downloadBlocked,g.downloadState,g.downloadReason];
+    }));
+}
+
+function retainedEntryId(entries, previous, fallback) {
+    if (indexOfId(entries,fallback)>=0) return fallback;
+    if (previous && previous.cloudKey) {
+        for(var i=0;i<entries.length;i++) if(entries[i].cloudKey===previous.cloudKey)return entries[i].id;
+    }
+    return fallback;
+}
+
+function phoneAudioApp(entries) {
+    var apps=entries.filter(function(e){return isApp(e) && e.appPackage==="io.github.jqssun.airplay" && e.launchable && !e.game.missing;});
+    apps.sort(function(a,b){return a.id<b.id?-1:a.id>b.id?1:0;});
+    return apps[0] || null;
+}
+
+function cloudHistoryStore(raw, now) {
+    if(typeof now!=="number" || !isFinite(now) || now<=0)return null;
+    if(raw===null || raw===undefined)return {version:1,opened:{}};
+    if(!raw || raw.version!==1 || !raw.opened || typeof raw.opened!=="object" || Array.isArray(raw.opened))return null;
+    var keys=Object.keys(raw.opened),opened={};
+    if(keys.length>1000)return null;
+    for(var i=0;i<keys.length;i++) {
+        var id=keys[i],value=raw.opened[id];
+        if(!/^nova:cloud_[a-f0-9]{64}:[1-9][0-9]*_[a-f0-9]{64}$/.test(id)
+            || typeof value!=="number" || !isFinite(value) || value<=0 || value>now+300000)return null;
+        opened[id]=value;
+    }
+    return {version:1,opened:opened};
+}
+
+function rememberCloudOpening(store, id, now) {
+    if(!cloudHistoryStore(store,now) || !/^nova:cloud_[a-f0-9]{64}:[1-9][0-9]*_[a-f0-9]{64}$/.test(id))return null;
+    var opened={},keys=Object.keys(store.opened).filter(function(key){return key!==id;});
+    keys.sort(function(a,b){return store.opened[b]-store.opened[a];});
+    keys.slice(0,999).forEach(function(key){opened[key]=store.opened[key];});
+    opened[id]=now;return {version:1,opened:opened};
+}
+
 // Equal-area sizing at the art's natural ratio, then shrunk to fit the box.
 function fitArea(ratio, area, maxW, maxH) {
     if (!(ratio > 0))
@@ -414,16 +561,20 @@ function configuredApp(entries, packageName, title) {
     return available[0] || null;
 }
 
+function isApp(e) {
+    return !!e && (e.systemId === "androidapps" || e.systemId === "emulators");
+}
+
 function appPurpose(e) {
     if (!e) return "";
     if (appMatches(e, "com.droiddeck.launcher", "DroidDeck")) return "Steam library, installs and game setup";
     if (appMatches(e, "dev.jdtech.jellyfin", "Findroid") || appMatches(e, "org.jellyfin.mobile", "Jellyfin")) return "Jellyfin films and shows";
     if (e.title === "Files" && e.systemId === "androidapps") return "Browse files on this device";
-    return "Android app";
+    return "";
 }
 
 function routeSentence(e) {
-    if (e.systemId === "androidapps")
+    if (isApp(e))
         return e.game.missing ? "This app shortcut is unavailable here."
              : e.launchable ? "App shortcut set up here."
              : "This app is not set up in Library yet.";
@@ -504,7 +655,7 @@ function normalizeDevice(raw) {
         if (cp && typeof cp === "object")
             cp = cp.text;
         out.entries[id] = {
-            checkpoint: str(cp).trim(),
+            checkpoint: str(cp),
             status: progressState(p.status),
             revision: p.revision === undefined ? null : p.revision,
             pending: p.pending === true || (typeof p.pending === "number" && p.pending > 0),
@@ -574,14 +725,157 @@ function applyPersonal(entries, device) {
     }
 }
 
+// Shared by Home and its fixture tests; never changes a launch route.
+function homeShelf(entries, pins, ownerIds) {
+    var entryById={};
+    entries.forEach(function(e){if(!entryById[e.id])entryById[e.id]=e;});
+    var seen = {};
+    var grouped = groupEntries(entries);
+    var allEntries=sortEntries(grouped, "alpha");
+    function take(list, cap) {
+        var out = [];
+        for (var i = 0; i < list.length && out.length < cap; i++) {
+            var e = list[i];
+            if (!e || e.systemId === "androidapps" || e.systemId === "emulators") continue;
+            if (e && !e.discMembers) e = presentEdition(e, grouped);
+            var key = e ? presentationKey(e) : "";
+            if (e && !seen[key]) {
+                out.push(e);
+                seen[key] = true;
+            }
+        }
+        return out;
+    }
+    // Observed local launches lead. Handpicked and imported shelves stay labelled.
+    var localRecent = take(sortEntries(grouped.filter(function(e) {
+        return e.lastPlayedHere !== null && e.launchable;
+    }), "local-recent"), 6);
+    var rightNow = take((ownerIds || []).map(function(id) { return entryById[id]; }), 6)
+        .map(function(e, i) { return { e: e, i: i }; })
+        .sort(function(a, b) { return (b.e.lastPlayedHere || 0) - (a.e.lastPlayedHere || 0) || a.i - b.i; })
+        .map(function(x) { return x.e; });
+    var playing = take(sortEntries(entries.filter(function(e) { return e.status === "playing"; }), "recent"), 6);
+    var kept = take(pins.map(function(id) { return entryById[id]; }), 1000);
+    var recent = take(sortEntries(entries.filter(function(e) { return e.lastPlayed !== null; }), "recent"), 4);
+    var captions = {};
+    var gaps = {};
+    var out = [];
+    [["Last opened here", localRecent], ["Right now", rightNow], ["Playing", playing], ["Favourite", kept], ["Recent from catalogue", recent]].forEach(function(seg) {
+        if (!seg[1].length) return;
+        if (out.length) gaps[out[out.length - 1].id] = true;
+        seg[1].forEach(function(t) { captions[t.id] = seg[0]; out.push(t); });
+    });
+    if (!out.length) {
+        var starters = entries.filter(function(e) { return e.home; }).sort(function(a, b) {
+            var oa = parseInt(extra(a.game, "home-order"), 10);
+            var ob = parseInt(extra(b.game, "home-order"), 10);
+            return (isNaN(oa) ? a.order : oa) - (isNaN(ob) ? b.order : ob);
+        });
+        take(starters, 12).forEach(function(e) { captions[e.id] = "Starter pick"; out.push(e); });
+    }
+
+    var fallback = false;
+    if (!out.length) {
+        for (var j = 0; j < allEntries.length && out.length < 12; j++) {
+            if (allEntries[j].launchable && allEntries[j].systemId !== "androidapps" && allEntries[j].systemId !== "emulators") {
+                out.push(allEntries[j]);
+                captions[allEntries[j].id] = "Set up here";
+            }
+        }
+        fallback = out.length > 0;
+    }
+
+    return {entries:out,captions:captions,gaps:gaps,fallback:fallback};
+}
+
+// Explicit local session preferences. These describe a comfortable play window,
+// never a game's completion time or a duration inferred from telemetry.
+var SESSION_WINDOWS = ["five", "twenty", "evening"];
+var SESSION_LABELS = { unavailable: "Labels unavailable", five: "5 minutes", twenty: "20 minutes", evening: "An evening", unknown: "Not labelled", mixed: "Mixed labels" };
+
+function sessionId(id) {
+    return typeof id === "string" && id.length > 0 && id.length <= 512
+        && id.indexOf("untagged:") !== 0 && ["__proto__", "constructor", "prototype"].indexOf(id) < 0
+        && !/[\x00-\x1f\x7f]/.test(id);
+}
+
+function sessionStore(raw) {
+    if (raw === undefined || raw === null) return {version:1, labels:{}};
+    if (typeof raw !== "object" || Array.isArray(raw) || raw.version !== 1
+            || !raw.labels || typeof raw.labels !== "object" || Array.isArray(raw.labels)) return null;
+    var ids = Object.keys(raw.labels), labels = {};
+    if (ids.length > 10000) return null;
+    for (var i=0; i<ids.length; i++) {
+        if (!sessionId(ids[i]) || SESSION_WINDOWS.indexOf(raw.labels[ids[i]]) < 0) return null;
+        labels[ids[i]] = raw.labels[ids[i]];
+    }
+    return {version:1, labels:labels};
+}
+
+function sessionTargets(entry) {
+    if (!entry || entry.systemId === "androidapps" || entry.systemId === "emulators") return [];
+    var members = entry.discMembers || [entry], ids = [];
+    for (var i=0; i<members.length; i++) {
+        if (!sessionId(members[i].id)) return [];
+        if (ids.indexOf(members[i].id) < 0) ids.push(members[i].id);
+    }
+    return ids;
+}
+
+function changeSession(store, entry, value) {
+    var clean = sessionStore(store), ids = sessionTargets(entry);
+    if (!clean || !ids.length || (value !== "" && SESSION_WINDOWS.indexOf(value) < 0)) return null;
+    ids.forEach(function(id) { if (value) clean.labels[id] = value; else delete clean.labels[id]; });
+    return Object.keys(clean.labels).length <= 10000 ? clean : null;
+}
+
+function applySessions(entries, store) {
+    entries.forEach(function(e) {
+        e.sessionWindow = store === null ? "unavailable"
+            : Object.prototype.hasOwnProperty.call(store.labels,e.id) ? store.labels[e.id] : "";
+    });
+}
+
+function sessionValue(entry) {
+    if (!entry) return "unknown";
+    var members = entry.discMembers || [entry];
+    if (!members.length) return "unknown";
+    var first = members[0].sessionWindow || "unknown";
+    return members.every(function(m) { return (m.sessionWindow || "unknown") === first; }) ? first : "mixed";
+}
+
+function sessionMatches(entry, value) {
+    if (!value) return true;
+    if (!entry || entry.systemId === "androidapps" || entry.systemId === "emulators") return false;
+    return sessionValue(entry) === value;
+}
+
 // ---------- filtering and sorting ----------
 
 function emptyFilters() {
-    return { system: "", device: "", kept: false, status: "" };
+    return { system: "", device: "", kept: false, status: "", aspect: "", session: "" };
 }
 
 function filtersActive(f) {
-    return !!(f && (f.system || f.device || f.kept || f.status));
+    return !!(f && (f.system || f.device || f.kept || f.status || f.aspect || f.session));
+}
+
+function originalAspect(e) {
+    var source=e && e.originalAspectSource;
+    return e && ["4:3", "16:9", "other"].indexOf(e.originalAspect) !== -1
+        && typeof source === "string" && source.trim().length > 0 && source.length <= 500
+        && !/[<>\x00-\x1f\x7f]/.test(source) ? e.originalAspect : "";
+}
+
+function aspectMatches(e, aspect) {
+    if (!aspect) return true;
+    if (e.systemId === "androidapps" || e.systemId === "emulators") return false;
+    if (aspect === "original-4-3") return originalAspect(e) === "4:3";
+    var evidence=e.displayEvidence;
+    if (aspect === "native-4-3") return !!evidence && evidence.native43 === true;
+    if (aspect === "stretch-only") return !!evidence && evidence.stretchOnly === true;
+    if (aspect === "unverified") return !evidence || evidence.unknown === true;
+    return false;
 }
 
 function readyOn(e, device) {
@@ -601,6 +895,7 @@ function matches(e, f, pinned, query) {
         return false;
     if (f.status && e.status !== f.status)
         return false;
+    if (!aspectMatches(e, f.aspect) || !sessionMatches(e, f.session)) return false;
     if (query && e.title.toLowerCase().indexOf(query) === -1 && e.sortKey.indexOf(query) === -1)
         return false;
     return true;
@@ -613,7 +908,14 @@ function filterEntries(entries, f, pins, query) {
     var q = (query || "").trim().toLowerCase();
     var out = [];
     entries.forEach(function(e) {
+        // App shortcuts stay in Apps, unless a system filter explicitly asks for them.
+        if (isApp(e) && f.system !== e.systemId) return;
         if (!e.discMembers) { if (matches(e, f, pinned, q)) out.push(e); return; }
+        // A game-level aspect result must hold for every disc, not just its default.
+        if (f.aspect && !(f.aspect === "unverified"
+                ? e.discMembers.some(function(m) { return aspectMatches(m, f.aspect); })
+                : e.discMembers.every(function(m) { return aspectMatches(m, f.aspect); }))) return;
+        if (!sessionMatches(e, f.session)) return;
         var nameMatch = q && e.title.toLowerCase().indexOf(q) !== -1;
         var matching = e.discMembers.filter(function(m) { return matches(m, f, pinned, nameMatch ? "" : q); });
         if (matching.length) out.push(discPresentation(e.discMembers, defaultDisc(matching)));
@@ -651,7 +953,49 @@ function sortEntries(entries, mode) {
 
 // Systems present in the catalogue, by name, for the filter to cycle through.
 var CONSOLE_SHORT = { snes: "Super Nintendo", n64: "Nintendo 64", gc: "GameCube", gbc: "Game Boy Color",
-    psx: "PlayStation", ps2: "PlayStation 2", psp: "PSP", dreamcast: "Dreamcast", nds: "Nintendo DS", pc: "PC" };
+    nes: "NES", gb: "Game Boy", gba: "Game Boy Advance", wii: "Wii", wiiu: "Wii U", switch: "Nintendo Switch",
+    psx: "PlayStation", ps2: "PlayStation 2", ps3: "PlayStation 3", psp: "PSP", vita: "PS Vita",
+    dreamcast: "Dreamcast", nds: "Nintendo DS", n3ds: "Nintendo 3DS", pc: "PC", xbox: "Xbox",
+    xbox360: "Xbox 360", xboxone: "Xbox One", xboxseries: "Xbox Series" };
+
+// Presentation only: aliases never rewrite edition identity or launch adapters.
+var CONSOLE_GLYPHS = { snes:"snes", nes:"nes", n64:"n64", gc:"gc", gamecube:"gc", gbc:"gbc", gb:"gb", gba:"gba", wii:"wii", wiiu:"wiiu",
+    psx:"psx", ps1:"psx", ps:"psx", ps2:"ps2", ps3:"ps3", psp:"psp", vita:"vita",
+    dreamcast:"dreamcast", nds:"nds", ds:"nds", n3ds:"n3ds", "3ds":"n3ds", switch:"switch", pc:"pc",
+    xbox:"xbox", xbox360:"xbox360", xboxone:"xboxone", xboxseries:"xboxseries" };
+
+function consoleGlyph(id) { return CONSOLE_GLYPHS[String(id || "").toLowerCase()] || "system"; }
+function consoleWordmark(id) { return ["ps2","ps3","psp","vita","nds","wii","wiiu"].indexOf(consoleGlyph(id)) !== -1; }
+
+// The compact card uses the family emblem; the adjacent name carries the generation.
+// Keep consoleGlyph's exact identity for other contexts and catalogue adapters.
+function consoleCardGlyph(id) {
+    var glyph = consoleGlyph(id);
+    return ["ps2","ps3","psp","vita"].indexOf(glyph) !== -1 ? "psx"
+         : glyph === "nds" ? "ds-hardware" : glyph;
+}
+
+function homeHeading(entries, captions, fallback, greeting) {
+    if (fallback || !entries.length) return "Your library";
+    var recent = entries.filter(function(e) { return captions[e.id] === "Last opened here"; }).length;
+    return recent === entries.length ? "Recently opened" : recent ? "Your library" : greeting;
+}
+
+function consolePreviews(entries) {
+    var out = {};
+    for (var i=0;i<entries.length;i++) {
+        var e=entries[i];
+        if (!e.systemId || !e.art || e.systemId === "androidapps" || e.systemId === "emulators") continue;
+        if (!out[e.systemId]) out[e.systemId]=[];
+        var previews=out[e.systemId];
+        // A preview is a sample, not a merge: repeated editions stay in Library.
+        var repeated=previews.some(function(p) {
+            return p.art === e.art || (p.title && e.title && p.title.toLowerCase() === e.title.toLowerCase());
+        });
+        if (previews.length < 3 && !repeated) previews.push(e);
+    }
+    return out;
+}
 
 // Catalogue system names are long ("Nintendo SNES (Super Nintendo)"); cards use the common name.
 function consoleShortName(system) {
@@ -671,7 +1015,10 @@ function systemsOf(entries) {
         }
         seen[e.systemId].count++;
     }
-    out.sort(function(a, b) { return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : a.name.toLowerCase() > b.name.toLowerCase() ? 1 : 0; });
+    out.sort(function(a, b) {
+        var an = consoleShortName(a).toLowerCase(), bn = consoleShortName(b).toLowerCase();
+        return an < bn ? -1 : an > bn ? 1 : 0;
+    });
     if (unknown)
         out.push({ id: "?", name: "Unknown system", count: unknown });
     return out;
@@ -753,7 +1100,7 @@ function leftOffLine(entries, now) {
     var title = last.discSetName || last.title;
     if (last.checkpoint && last.checkpointSource === "you")
         return title + " · you stopped at: " + last.checkpoint;
-    return "Last played: " + title + " · " + sinceText(last.lastPlayedHere, now);
+    return "Last opened: " + title + " · " + sinceText(last.lastPlayedHere, now);
 }
 
 // ---------- threads ----------
@@ -864,15 +1211,40 @@ function installLabel(e, device) {
     return { installed: "Installed", absent: "Not installed", partial: "Incomplete", unknown: "Not checked" }[v.state];
 }
 
+function hasInstallObservation(e) {
+    return installation(e, "nova").state !== "unknown" || installation(e, "legion").state !== "unknown";
+}
+
 function availabilityText(e) {
+    if (e && e.cloudId) return e.launchable ? "On Nova" + (e.cloudCopyChanged ? " · cloud copy changed" : "")
+        : e.cloudDownloadBlocked ? "Download needs review · files kept"
+        : e.cloudDownloadState === "downloading" ? "Downloading to Nova"
+        : e.cloudPartial ? e.cloudResumeAvailable ? "Ready to resume · in cloud" : "Partial download · files need checking"
+        : "In cloud · not installed here";
+    return hasInstallObservation(e) ? installBadge(e) : "Install status not checked";
+}
+
+// A compact observation label, independent of whether a launch route is configured.
+function installBadge(e) {
+    if (e && e.cloudId) return e.launchable ? "On Nova" : e.cloudDownloadBlocked ? "Needs review" : e.cloudDownloadState === "downloading" ? "Downloading" : e.cloudPartial ? "Partial download" : "In cloud";
     var nova = installation(e, "nova"), legion = installation(e, "legion");
-    if (nova.state === "installed" && legion.state === "installed") return "Nova + Legion";
-    if (nova.state === "installed") return "On Nova";
+    if (nova.state === "installed") return legion.state === "installed" ? "Nova + Legion" : "On Nova";
+    if (nova.state === "partial") return "Incomplete on Nova";
     if (legion.state === "installed") return "Seen on Legion";
     if (nova.state === "absent" && legion.state === "absent") return "Absent in both scans";
-    if (nova.state === "partial") return "Part of this game is on Nova";
     if (nova.state === "absent") return "Not on Nova";
-    return "Install status not checked";
+    return "Install not checked";
+}
+
+function cloudActionLabel(e) {
+    return e && e.launchable ? "Play" : e && e.cloudDownloadBlocked ? "Review download"
+        : e && e.cloudResumeAvailable ? "Resume download" : e && e.cloudPartial ? "Check download" : "Install";
+}
+
+// Keep route readiness explicit without replacing the underlying install observation.
+function libraryBadge(e, sortValue) {
+    if (e.launchable && sortValue) return sortValue;
+    return installBadge(e) + (!e.launchable && installation(e, "nova").state === "installed" ? " · no route" : "");
 }
 
 function capacityData(raw) {

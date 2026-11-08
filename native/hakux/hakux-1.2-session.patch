@@ -1,0 +1,391 @@
+--- a/android/app/build.gradle.kts
++++ b/android/app/build.gradle.kts
+@@ -23,16 +23,16 @@
+ android {
+   namespace = "com.rfandango.haku_x"
+   compileSdk = 36
+-  buildToolsVersion = "36.1.0"
++  buildToolsVersion = providers.gradleProperty("novaBuildTools").orElse("36.1.0").get()
+   ndkVersion = "29.0.14206865"
+ 
+   defaultConfig {
+-    applicationId = "com.rfandango.haku_x"
++    applicationId = providers.gradleProperty("novaApplicationId").orElse("com.rfandango.haku_x").get()
+     minSdk = 28
+     targetSdk = 36
+ 
+-    versionCode = 8
+-    versionName = "1.2.0"
++    versionCode = providers.gradleProperty("novaVersionCode").orElse("8").get().toInt()
++    versionName = providers.gradleProperty("novaVersionName").orElse("1.2.0").get()
+ 
+     ndk {
+       abiFilters += listOf("arm64-v8a")
+@@ -74,7 +74,7 @@
+       )
+     }
+     release {
+-      resValue("string", "app_name", "hakuX")
++      resValue("string", "app_name", providers.gradleProperty("novaAppName").orElse("hakuX").get())
+       isMinifyEnabled = true
+       proguardFiles(
+         getDefaultProguardFile("proguard-android-optimize.txt"),
+--- a/android/app/src/main/java/com/rfandango/haku_x/NativeCoreActivity.kt
++++ b/android/app/src/main/java/com/rfandango/haku_x/NativeCoreActivity.kt
+@@ -453,7 +453,7 @@
+    */
+   override fun onWindowFocusChanged(hasFocus: Boolean) {
+     super.onWindowFocusChanged(hasFocus)
+-    if (hasFocus) hideSystemBars()
++    if (hasFocus) hideSystemBars() else clearSessionKeys()
+   }
+ 
+   /** SDL's window style stays full screen: its windowed start showed the status bar for a moment. */
+@@ -469,6 +469,7 @@
+   }
+ 
+   override fun onPause() {
++    clearSessionKeys()
+     fpsHandler.removeCallbacks(fpsRunnable)
+     fpsHandler.removeCallbacks(fatalRunnable)
+     fpsHandler.removeCallbacks(rumbleRunnable)
+@@ -479,6 +480,7 @@
+   }
+ 
+   override fun onDestroy() {
++    clearSessionKeys()
+     fpsHandler.removeCallbacks(fpsRunnable)
+     fpsHandler.removeCallbacks(fatalRunnable)
+     fpsHandler.removeCallbacks(rumbleRunnable)
+@@ -726,6 +728,7 @@
+         updateControllerVisibility()
+       },
+       getString(R.string.overlay_menu_controllers) to ::showPlayers,
++      "Controller shortcuts" to ::showSessionShortcuts,
+     )
+     if (states) {
+       items += getString(R.string.overlay_menu_save_state) to { saveStates.showSlots(save = true) }
+@@ -967,6 +970,73 @@
+   }
+ 
+   /* Back opens the menu instead of leaving the game; while editing, it cancels the edit. */
++  private val sessionKeys = SessionShortcuts()
++  private val sessionPrefs by lazy { getSharedPreferences("nova-session", Context.MODE_PRIVATE) }
++  private var selectTapUp: KeyEvent? = null
++  private var selectTapRelease: Runnable? = null
++
++  private fun routeSessionKey(event: KeyEvent): Boolean =
++    if (router?.onKey(event) == true) true else super.dispatchKeyEvent(event)
++
++  private fun clearSessionKeys() {
++    sessionKeys.reset()
++    selectTapRelease?.let { fpsHandler.removeCallbacks(it) }
++    selectTapRelease = null
++    selectTapUp?.let { routeSessionKey(it) }
++    selectTapUp = null
++  }
++
++  private fun handleSessionKey(event: KeyEvent): Boolean {
++    if (!sessionPrefs.getBoolean("enabled", true) || menuDialogs > 0 || editorBar != null ||
++        !Controllers.isGameController(event.device) ||
++        event.action !in listOf(KeyEvent.ACTION_DOWN, KeyEvent.ACTION_UP)) return false
++    val result = sessionKeys.key(event.deviceId, event.keyCode,
++      event.action == KeyEvent.ACTION_DOWN, event.repeatCount, event.isCanceled)
++    if (!result.handled) return false
++    if (result.tapSelect) {
++      // A clean tap remains Xbox Back. Hold its pulse over a native input poll.
++      clearSessionKeys()
++      routeSessionKey(KeyEvent.changeAction(event, KeyEvent.ACTION_DOWN))
++      selectTapUp = KeyEvent(event)
++      val release = Runnable {
++        selectTapUp?.let { routeSessionKey(it) }
++        selectTapUp = null
++        selectTapRelease = null
++      }
++      selectTapRelease = release
++      fpsHandler.postDelayed(release, 60)
++    }
++    if (result.action == SessionShortcuts.MENU) showMenu()
++    else if (result.action != SessionShortcuts.NONE) {
++      if (!nativeStatesAvailable()) {
++        Toast.makeText(this, "Save states are unavailable in this session.", Toast.LENGTH_SHORT).show()
++      } else if (!saveStates.busy) {
++        when (result.action) {
++          SessionShortcuts.SAVE -> saveStates.quickSave()
++          SessionShortcuts.LOAD -> saveStates.quickLoad()
++          SessionShortcuts.PREVIOUS -> saveStates.stepSlot(-1)
++          SessionShortcuts.NEXT -> saveStates.stepSlot(1)
++        }
++      }
++    }
++    return true
++  }
++
++  private fun showSessionShortcuts() {
++    val enabled = sessionPrefs.getBoolean("enabled", true)
++    showMenuDialog(AlertDialog.Builder(this)
++      .setTitle("Controller shortcuts")
++      .setMessage("Hold Select: R1 saves, L1 loads, L3/R3 changes slot, Y opens the emulator menu. " +
++        "Tap Select alone for Xbox Back. A quick save uses an empty slot; if all ten are full, replacement asks first. " +
++        "These shortcuts do not sync saves to the cloud.\n\n" +
++        if (enabled) "Shortcuts are on." else "Shortcuts are off.")
++      .setNeutralButton(if (enabled) "Turn off" else "Turn on") { _, _ ->
++        sessionPrefs.edit().putBoolean("enabled", !enabled).apply()
++        clearSessionKeys()
++      }
++      .setPositiveButton(android.R.string.ok, null))
++  }
++
+   private fun onBack() {
+     if (editorBar != null) {
+       onScreenController?.reloadLayout()
+@@ -989,6 +1059,7 @@
+    * it: Controllers.defaults).
+    */
+   override fun dispatchKeyEvent(event: KeyEvent): Boolean {
++    if (handleSessionKey(event)) return true
+     if (event.keyCode == KeyEvent.KEYCODE_BACK && router?.bindsKey(event) != true) {
+       if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) {
+         onBack()
+@@ -1019,7 +1090,7 @@
+   }
+ 
+   override fun onInputDeviceAdded(deviceId: Int) = onControllersChanged()
+-  override fun onInputDeviceRemoved(deviceId: Int) = onControllersChanged()
++  override fun onInputDeviceRemoved(deviceId: Int) { clearSessionKeys(); onControllersChanged() }
+   override fun onInputDeviceChanged(deviceId: Int) = onControllersChanged()
+ 
+   private fun onControllersChanged() {
+--- a/android/app/src/main/java/com/rfandango/haku_x/SaveStates.kt
++++ b/android/app/src/main/java/com/rfandango/haku_x/SaveStates.kt
+@@ -39,6 +39,44 @@
+ ) {
+   private val store = SaveStateStore(activity, gameKey, discUri)
+ 
++  private val preferences = activity.getSharedPreferences("nova-checkpoint-slots", android.content.Context.MODE_PRIVATE)
++  private val preferenceKey = "slot:" + gameKey
++  var busy: Boolean = false
++    private set
++
++  private fun selectedSlot(): Int {
++    val latest = store.saved().maxByOrNull { store.state(it).lastModified() } ?: 1
++    return preferences.getInt(preferenceKey, latest).coerceIn(1, SaveStateStore.SLOTS)
++  }
++
++  private fun select(slot: Int) { preferences.edit().putInt(preferenceKey, slot).apply() }
++
++  fun stepSlot(step: Int) {
++    if (busy) return
++    val slot = (selectedSlot() - 1 + step + SaveStateStore.SLOTS) % SaveStateStore.SLOTS + 1
++    select(slot)
++    Toast.makeText(activity, "Slot $slot · " + (if (state(slot).isFile) "saved" else "empty"), Toast.LENGTH_SHORT).show()
++  }
++
++  fun quickSave() {
++    if (busy) return
++    val selected = selectedSlot()
++    val empty = CheckpointSlots.emptyAtOrAfter(selected, SaveStateStore.SLOTS, store.saved())
++    if (empty != 0) save(empty)
++    else showDialog(AlertDialog.Builder(activity)
++      .setTitle("All checkpoint slots are full")
++      .setMessage("Replace the checkpoint in slot $selected? The other nine checkpoints stay available.")
++      .setNegativeButton(android.R.string.cancel, null)
++      .setPositiveButton("Replace slot $selected") { _, _ -> save(selected) })
++  }
++
++  fun quickLoad() {
++    if (busy) return
++    val slot = selectedSlot()
++    if (state(slot).isFile) load(slot)
++    else Toast.makeText(activity, "Slot $slot is empty. Hold Select and click L3/R3 to choose another slot.", Toast.LENGTH_LONG).show()
++  }
++
+   fun state(slot: Int) = store.state(slot)
+ 
+   /** The slots for Save state (all of them) or Load state (the saved ones). */
+@@ -68,6 +106,9 @@
+   }
+ 
+   fun save(slot: Int) {
++    if (busy || slot !in 1..SaveStateStore.SLOTS) return
++    busy = true
++    select(slot)
+     store.prepare()
+     val progress = showDialog(
+       AlertDialog.Builder(activity)
+@@ -75,9 +116,11 @@
+         .setCancelable(false)
+     )
+     Thread {
+-      val err = NativeCoreActivity.nativeSaveState(store.state(slot).absolutePath)
++      val err = runCatching { NativeCoreActivity.nativeSaveState(store.state(slot).absolutePath) }
++        .getOrElse { it.message ?: "The checkpoint could not be saved." }
+       activity.runOnUiThread {
+         if (err != null) {
++          busy = false
+           progress.dismiss()
+           showDialog(
+             AlertDialog.Builder(activity)
+@@ -94,6 +137,7 @@
+               runCatching { store.thumb(slot).outputStream().use { frame.compress(Bitmap.CompressFormat.JPEG, 90, it) } }
+             }
+             activity.runOnUiThread {
++              busy = false
+               progress.dismiss()
+               Toast.makeText(activity, activity.getString(R.string.state_saved, slot), Toast.LENGTH_SHORT).show()
+             }
+@@ -104,11 +148,16 @@
+   }
+ 
+   fun load(slot: Int) {
++    if (busy || slot !in 1..SaveStateStore.SLOTS) return
++    busy = true
++    select(slot)
+     val file = store.state(slot)
+     Thread {
+-      val err = NativeCoreActivity.nativeStateCheck(file.absolutePath)
++      val err = runCatching { NativeCoreActivity.nativeStateCheck(file.absolutePath) }
++        .getOrElse { it.message ?: "The checkpoint could not be loaded." }
+       activity.runOnUiThread {
+         if (err != null) {
++          busy = false
+           showDialog(
+             AlertDialog.Builder(activity)
+               .setTitle(R.string.state_load_failed_title)
+--- a/android/app/src/main/java/com/rfandango/haku_x/data/SaveStateStore.kt
++++ b/android/app/src/main/java/com/rfandango/haku_x/data/SaveStateStore.kt
+@@ -3,7 +3,10 @@
+ import android.content.Context
+ import android.util.Log
+ import java.io.File
++import java.io.FileOutputStream
+ import java.security.MessageDigest
++import java.nio.file.Files
++import java.nio.file.LinkOption.NOFOLLOW_LINKS
+ 
+ /**
+  * A game's savestates (the native core's, native/state): ten slots, each a
+@@ -13,10 +16,17 @@
+  *
+  * discUri: the disc's URI as the game was started with it; the first states
+  * were kept by its hash, and those move here the first time this store is
+- * made for the game.
++ * made for the game. Adoption copies a bundle, including its cache blobs;
++ * legacy originals and any existing destination checkpoints are retained.
+  */
+-class SaveStateStore(context: Context, gameKey: String, discUri: String? = null) {
+-  private val root = File(context.filesDir, "native/states")
++class SaveStateStore internal constructor(
++  private val root: File,
++  gameKey: String,
++  discUri: String? = null,
++  private val migrationNote: (String) -> Unit = {},
++) {
++  constructor(context: Context, gameKey: String, discUri: String? = null) :
++    this(File(context.filesDir, "native/states"), gameKey, discUri, { Log.i(TAG, it) })
+   private val dir = File(root, folder(gameKey))
+ 
+   init {
+@@ -45,21 +55,82 @@
+     if (saved().isEmpty()) File(dir, "blobs").deleteRecursively()
+   }
+ 
+-  /** States kept by the disc URI's hash: their slots move here (newer wins). */
++  /** Copy legacy bundles without replacing current checkpoints or deleting sources. */
+   private fun adoptLegacy(old: File) {
+     if (old == dir || !old.isDirectory) return
+-    dir.mkdirs()
+-    for (slot in 1..SLOTS) {
+-      val s = File(old, "slot$slot.hxs")
+-      if (!s.isFile) continue
+-      if (!state(slot).isFile || s.lastModified() > state(slot).lastModified()) {
+-        s.renameTo(state(slot))
+-        File(old, "slot$slot.jpg").let { if (it.isFile) it.renameTo(thumb(slot)) }
+-        Log.i(TAG, "savestate slot $slot moved from ${old.name} to ${dir.name}")
++    if (!plainDirectory(root) || !plainDirectory(old) || !plainDirectory(dir)) return
++    val slots = (1..SLOTS).filter {
++      val source = File(old, "slot$it.hxs")
++      source.isFile && !Files.isSymbolicLink(source.toPath()) && !Files.exists(state(it).toPath(), NOFOLLOW_LINKS)
++    }
++    if (slots.isEmpty()) return
++    val stateHashes = try {
++      slots.associateWith { checksum(File(old, "slot$it.hxs")) }
++    } catch (_: java.io.IOException) { return }
++    val oldBlobs = File(old, "blobs")
++    val blobs = if (Files.exists(oldBlobs.toPath(), NOFOLLOW_LINKS)) {
++      if (!plainDirectory(oldBlobs)) return
++      oldBlobs.listFiles()?.filter { it.name != "index" } ?: return
++    } else emptyList()
++    if (blobs.any { !it.name.matches(Regex("[0-9a-f]{32}(\\.gz)?")) ||
++        !it.isFile || Files.isSymbolicLink(it.toPath()) }) return
++    val destinationBlobs = File(dir, "blobs")
++    if (blobs.isNotEmpty() && !plainDirectory(destinationBlobs)) return
++    // Cache files must be present before a state referencing them becomes visible.
++    if (blobs.any { !copyMissing(it, File(destinationBlobs, it.name)) }) {
++      migrationNote("Legacy checkpoints retained: cache copy needs review")
++      return
++    }
++    for (slot in slots) {
++      val sourceThumb = File(old, "slot$slot.jpg")
++      val hasThumb = Files.exists(sourceThumb.toPath(), NOFOLLOW_LINKS)
++      if (hasThumb && !copyMissing(sourceThumb, thumb(slot))) continue
++      if (!hasThumb && Files.exists(thumb(slot).toPath(), NOFOLLOW_LINKS)) continue
++      if (copyMissing(File(old, "slot$slot.hxs"), state(slot), stateHashes[slot]))
++        migrationNote("Legacy checkpoint copied; original retained")
++    }
++  }
++
++  private fun plainDirectory(path: File): Boolean =
++    !Files.isSymbolicLink(path.toPath()) && (path.isDirectory || path.mkdirs())
++
++  /** Publish only verified copies. A hard link commits without replacing an arriving file. */
++  private fun copyMissing(source: File, destination: File, expected: ByteArray? = null): Boolean {
++    var temporary: File? = null
++    return try {
++      if (!source.isFile || Files.isSymbolicLink(source.toPath())) return false
++      val before = checksum(source)
++      if (expected != null && !before.contentEquals(expected)) return false
++      if (Files.exists(destination.toPath(), NOFOLLOW_LINKS))
++        return destination.isFile && !Files.isSymbolicLink(destination.toPath()) && checksum(destination).contentEquals(before)
++      temporary = Files.createTempFile(destination.parentFile!!.toPath(), "legacy-", ".pending").toFile()
++      source.inputStream().use { input -> FileOutputStream(temporary).use { input.copyTo(it); it.fd.sync() } }
++      if (!checksum(temporary).contentEquals(before) || !checksum(source).contentEquals(before)) return false
++      temporary.setLastModified(source.lastModified())
++      Files.createLink(destination.toPath(), temporary.toPath())
++      true
++    } catch (_: java.io.IOException) {
++      false
++    } catch (_: UnsupportedOperationException) {
++      false
++    } catch (_: SecurityException) {
++      false
++    } finally {
++      temporary?.delete()
++    }
++  }
++
++  private fun checksum(file: File): ByteArray {
++    val digest = MessageDigest.getInstance("SHA-256")
++    file.inputStream().use { input ->
++      val bytes = ByteArray(16384)
++      while (true) {
++        val count = input.read(bytes)
++        if (count < 0) break
++        digest.update(bytes, 0, count)
+       }
+     }
+-    old.listFiles()?.forEach { it.delete() }
+-    old.delete()
++    return digest.digest()
+   }
+ 
+   companion object {
+@@ -71,7 +142,7 @@
+ 
+     /** A folder name for a key: as it is when it can be ("4D53004B.1"), else hashed. */
+     private fun folder(key: String): String =
+-      if (key.matches(Regex("[A-Za-z0-9._-]{1,64}"))) key else hash(key)
++      if (key.matches(Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,63}"))) key else hash(key)
+ 
+     private fun hash(s: String): String {
+       val d = MessageDigest.getInstance("SHA-1").digest(s.toByteArray())

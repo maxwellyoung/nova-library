@@ -12,10 +12,12 @@ Column {
     readonly property bool known: evidence !== null
     height: size * 5.4
     spacing: size * 0.45
-    Row {
-        spacing: capacity.size * 0.45
-        Icon { name: "storage"; width: capacity.size; height: width; ink: capacity.ink }
-        Text { text: capacity.known ? Lib.bytesText(capacity.evidence.free) + " available" : "Free space not checked"; color: capacity.known && capacity.evidence.free / capacity.evidence.total < 0.05 ? capacity.warning : capacity.ink; font.family: capacity.fontFamily; font.pixelSize: capacity.size; font.weight: Font.DemiBold }
+    Text {
+        width: parent.width
+        text: capacity.known ? Lib.bytesText(capacity.evidence.free) + " free at last snapshot" : "Free space not checked"
+        color: capacity.known && capacity.evidence.free / capacity.evidence.total < 0.05 ? capacity.warning : capacity.ink
+        font.family: capacity.fontFamily; font.pixelSize: capacity.size; font.weight: Font.DemiBold
+        maximumLineCount: 1; elide: Text.ElideRight
     }
     Rectangle {
         width: capacity.width; height: capacity.size * 0.6; color: capacity.slab

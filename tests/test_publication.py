@@ -1,8 +1,10 @@
 import hashlib
 import importlib.util
 import json
+import struct
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 
 
@@ -25,6 +27,24 @@ def tree_hashes(root):
 
 
 class DemoTests(unittest.TestCase):
+    def test_raster_cover_has_valid_chunks_dimensions_and_pixel_payload(self):
+        raw = demo.cover_png('#bc7747', 0)
+        self.assertEqual(raw[:8], b'\x89PNG\r\n\x1a\n')
+        chunks, offset = {}, 8
+        while offset < len(raw):
+            size = struct.unpack_from('>I', raw, offset)[0]
+            kind = raw[offset+4:offset+8]
+            payload = raw[offset+8:offset+8+size]
+            self.assertEqual(zlib.crc32(kind+payload)&0xffffffff, struct.unpack_from('>I', raw, offset+8+size)[0])
+            chunks[kind] = payload
+            offset += size+12
+        self.assertEqual(offset, len(raw))
+        self.assertEqual(struct.unpack('>IIBBBBB', chunks[b'IHDR']), (480, 640, 8, 2, 0, 0, 0))
+        pixels = zlib.decompress(chunks[b'IDAT'])
+        self.assertEqual(len(pixels), (480*3+1)*640)
+        self.assertTrue(all(pixels[y*(480*3+1)] == 0 for y in range(640)))
+        self.assertNotEqual(raw, demo.cover_png('#719b8a', 1))
+
     def test_deterministic_generation(self):
         with tempfile.TemporaryDirectory() as temporary:
             first, second = Path(temporary) / 'first', Path(temporary) / 'second'
@@ -81,6 +101,12 @@ class PrivacyTests(unittest.TestCase):
             self.assertEqual(len(failures), 2)
             self.assertTrue(any('symlink' in rule for _, rule in failures))
             self.assertTrue(any('artifact' in rule for _, rule in failures))
+
+    def test_save_passports_are_private_artifacts_even_when_bytes_look_like_text(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / 'progress.nvs').write_text('private progress')
+            self.assertEqual(privacy.scan(root), [('progress.nvs', 'private/generated artifact')])
 
 
 if __name__ == '__main__':

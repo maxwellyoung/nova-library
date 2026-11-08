@@ -14,14 +14,18 @@ Window {
     // The demo cannot launch programs or contact a service.
     property var global: ({ fonts: { sans: Qt.application.font.family } })
     property var deviceLibrary: null
+    property var romCloud: null
     property QtObject api: QtObject {
+        signal gameFileLaunched(var file)
+        signal gameFileFinished(var file)
         property QtObject allGames: QtObject {
+            property var observedPlayDates: ({})
             property int count: DemoData.games.length
             function get(index) {
                 var source = DemoData.games[index];
                 return {
                     title: source.title, sortBy: source.sortBy, developer: source.developer,
-                    genre: source.genre, missing: source.missing, lastPlayed: source.lastPlayed,
+                    genre: source.genre, missing: source.missing, lastPlayed: observedPlayDates[source.extra["edition-id"]] || source.lastPlayed,
                     favorite: false, playCount: 0, extra: source.extra,
                     assets: { boxFront: Qt.resolvedUrl("generated/" + source.cover).toString() },
                     files: { count: 1, get: function() { return { path: source.file }; } },

@@ -1,0 +1,36 @@
+{
+  "repository": "https://github.com/rfandango/hakuX",
+  "commit": "e11ee60b90742a368a08f7f5339af10048a63a04",
+  "tag": "v1.2.0",
+  "patchSha256": "f0f92a8f4878160a9a8aff45b0291328d6f8b3c9b89229afc4cd33c94c3f0c9b",
+  "before": {
+    "android/app/build.gradle.kts": "bbcc7fd98b833299233a111e32df62cc902af1a75cf95d59de81b0022502924b",
+    "android/app/src/main/java/com/rfandango/haku_x/NativeCoreActivity.kt": "11b718f0c970038fbe33f731f837d63e5e6fb85c03e6b1ee95802d8d5814fa92",
+    "android/app/src/main/java/com/rfandango/haku_x/SaveStates.kt": "f2d29cb7fb5662c859ef63aaaabbb554714c1c0e1bbd41aeb3977f9e4a3c5dbf",
+    "android/app/src/main/java/com/rfandango/haku_x/data/SaveStateStore.kt": "66714ff209ae57a9edaf73baaa6b270420eb8c109ebae70926bd5cd8c436f6d3"
+  },
+  "after": {
+    "android/app/build.gradle.kts": "1f388e043b3e39dc835822b83fbab2616804fed9b93b7ba518facf183575a90b",
+    "android/app/src/main/java/com/rfandango/haku_x/NativeCoreActivity.kt": "5a8f7506339cf7815f25a5bb5abd3f2b060361fe8ccb36707e617fe2f420a23f",
+    "android/app/src/main/java/com/rfandango/haku_x/SaveStates.kt": "18fecd183e688164c6e53cb067cd43fff4a85bc7575699e04bf438690c51e784",
+    "android/app/src/main/java/com/rfandango/haku_x/data/SaveStateStore.kt": "8a84fda8c9b1ecf72fa22e37d7548f6b8155e5a0eb2b2221fb4f3f6bf4f610e3"
+  },
+  "helpers": {
+    "SessionShortcuts.java": {
+      "destination": "android/app/src/main/java/com/rfandango/haku_x/SessionShortcuts.java",
+      "sha256": "8837bfce6b4983428fba6f3d04b0a53a148a8e3ba6e1d5973811d5f87919f600"
+    },
+    "CheckpointSlots.java": {
+      "destination": "android/app/src/main/java/com/rfandango/haku_x/CheckpointSlots.java",
+      "sha256": "3536787602ced46613ebc33fafd49639fb6132a8024374023b081c55b121c7b7"
+    },
+    "SessionShortcutsTest.java": {
+      "destination": "android/app/src/test/java/com/rfandango/haku_x/SessionShortcutsTest.java",
+      "sha256": "b6e7bd64677dba7ffcc8eda505594749698536c48d2f02afe0adea74cfda5003"
+    },
+    "SaveStateStoreTest.kt": {
+      "destination": "android/app/src/test/java/com/rfandango/haku_x/data/SaveStateStoreTest.kt",
+      "sha256": "322f0314b1ec31e72b753db268121a8fb07662e266d7793291e1958324db3a4d"
+    }
+  }
+}

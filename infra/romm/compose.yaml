@@ -1,0 +1,49 @@
+# Deployment requires separate approval. Secrets/paths are supplied outside this repository.
+name: nova-rom-library
+services:
+  romm:
+    image: rommapp/romm:5.4.1@sha256:8677fb7b81b1d3db20b849e989a1dadc2a11159e51eb34a2acdcb01102274edf
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${ROMM_PORT:-8817}:8080"
+    extra_hosts:
+      # Upstream always enables this provider; keep its endpoint local during setup.
+      - "thumbnails.libretro.com:127.0.0.1"
+    environment:
+      DB_HOST: db
+      DB_NAME: romm
+      DB_USER: romm
+      DB_PASSWD: ${ROMM_DB_PASSWORD:?Supply a private environment file}
+      ROMM_AUTH_SECRET_KEY: ${ROMM_AUTH_SECRET_KEY:?Supply a private environment file}
+      HASHEOUS_API_ENABLED: "false"
+      DISABLE_DOWNLOAD_ENDPOINT_AUTH: "false"
+      SCAN_WORKERS: "1"
+      WEB_SERVER_CONCURRENCY: "1"
+    volumes:
+      - resources:/romm/resources
+      - redis:/redis-data
+      - ${ROMM_LIBRARY_PATH:?Select the server ROM library}:/romm/library:ro
+      - ${ROMM_STATE_PATH:?Select private persistent storage}/assets:/romm/assets
+      - ${ROMM_STATE_PATH}/config:/romm/config
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: mariadb:11.4@sha256:d1891ede5a559f1086f55053bb8cc1569b0298338c4d72d71725a7f74f6ba620
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: romm
+      MARIADB_USER: romm
+      MARIADB_PASSWORD: ${ROMM_DB_PASSWORD}
+      MARIADB_ROOT_PASSWORD: ${ROMM_DB_ROOT_PASSWORD:?Supply a private environment file}
+    volumes:
+      - database:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+volumes:
+  resources:
+  redis:
+  database:
