@@ -15,6 +15,7 @@ Window {
     property var global: ({ fonts: { sans: Qt.application.font.family } })
     property var deviceLibrary: null
     property var romCloud: null
+    property var pcRuntime: null
     property QtObject api: QtObject {
         signal gameFileLaunched(var file)
         signal gameFileFinished(var file)
@@ -35,9 +36,11 @@ Window {
         }
         property QtObject memory: QtObject {
             property var values: ({})
+            property bool refuseWrites: false
+            property bool refuseAllWrites: false
             function has(key) { return Object.prototype.hasOwnProperty.call(values, key); }
             function get(key) { return values[key]; }
-            function set(key, value) { values[key] = value; }
+            function set(key, value) { if(refuseAllWrites || refuseWrites && key === "pcRuntimeChoicesV1")throw new Error("Synthetic preference write refusal");values[key] = value; }
             function unset(key) { delete values[key]; }
         }
         property QtObject keys: QtObject {

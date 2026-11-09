@@ -34,5 +34,5 @@ jobs:
           git -C "$RUNNER_TEMP/pegasus-upstream" fetch --depth 1 origin 5d58223e58f84afb31d5d14a67438841b981a6fa
           git -C "$RUNNER_TEMP/pegasus-upstream" checkout --detach FETCH_HEAD
           git -C "$RUNNER_TEMP/pegasus-upstream" submodule update --init --recursive
-          python3 tools/prepare_native.py prepare "$RUNNER_TEMP/pegasus-upstream" --output "$RUNNER_TEMP/nova-paired" --rom-cloud
+          python3 tools/prepare_native.py prepare "$RUNNER_TEMP/pegasus-upstream" --output "$RUNNER_TEMP/nova-paired" --rom-cloud --stopping-notes --controller-check --pc-runtime
           python3 tools/prepare_native.py verify "$RUNNER_TEMP/nova-paired"

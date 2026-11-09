@@ -88,6 +88,23 @@ class NativePrepareTests(unittest.TestCase):
             shutil.copyfile(ROOT / 'tools' / name, self.root / 'tools' / name)
         return payloads
 
+    def test_pc_runtime_is_explicit_and_paired_without_other_optional_modules(self):
+        self.optional_inputs()
+        manifest=self.upstream/'src/app/platform/android/AndroidManifest.xml'
+        manifest.write_text('<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application /></manifest>')
+        run(self.upstream,'add','src');run(self.upstream,'commit','--quiet','-m','Fixture Android manifest')
+        self.manifest['commit']=run(self.upstream,'rev-parse','HEAD');self.write_spec()
+        destination=self.root/'native/pcgames';destination.mkdir()
+        for name in ('PcRuntime.h','PcRuntime.cpp','pcgames.pri','PcLaunchContract.java','PcRuntimeBridge.java'):
+            shutil.copyfile(ROOT/'native/pcgames'/name,destination/name)
+        shutil.copyfile(ROOT/'tools/apply_pc_runtime.py',self.root/'tools/apply_pc_runtime.py')
+        result=native.prepare(self.upstream,self.output,False,self.root,pc_runtime=True)
+        self.assertTrue(result['components']['pcRuntime'])
+        self.assertFalse(result['components']['romCloud'])
+        self.assertTrue((self.output/'source/src/backend/library/pcgames/PcRuntime.cpp').is_file())
+        self.assertTrue((self.output/'source/src/app/platform/android/src/org/pegasus_frontend/android/PcRuntimeBridge.java').is_file())
+        self.assertEqual(native.verify(self.output),result)
+
     def test_shallow_cache_clone_retains_a_valid_history_boundary(self):
         (self.upstream / 'history.txt').write_text('A later committed object\n')
         run(self.upstream, 'add', 'history.txt')
@@ -118,7 +135,7 @@ class NativePrepareTests(unittest.TestCase):
         result = native.prepare(self.upstream, self.output, True, self.root,
                                 stopping_notes=True, controller_check=True)
         self.assertEqual(result['components'], {'nativeBridge': True, 'romCloud': True, 'externalTheme': True,
-                                                'stoppingNotes': True, 'controllerCheck': True})
+                                                'stoppingNotes': True, 'controllerCheck': True, 'pcRuntime': False})
         for component, names in payloads.items():
             for name in names:
                 input_name = 'native/' + component + '/' + name

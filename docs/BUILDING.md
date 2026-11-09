@@ -168,3 +168,13 @@ For a personal in-place update, use the existing approved signing identity in th
 Use a data-preserving Android package update (`adb install -r`) only after those checks. The Device CLI's `reinstall` uninstalls first: it deletes app-private data, app-scoped external preferences/history and Android Keystore keys, and resets Home and permissions. Never use it for an existing personal Library. Back up both internal files/shared preferences and the app-scoped external Pegasus directory before updating; a ciphertext enrollment vault alone cannot recover a deleted Keystore key. Retain the previously approved enrollment privately for recovery. Verify the same local files, grants, Home choice and sync after the update.
 
 Restore writable app data as the app UID, including the external `theme_settings` directory and `stats.db`. An ADB push can leave shell-owned files that Qt can read but cannot save. Check owner IDs and an actual preference write after restoration; readback alone does not establish writability. Retain prior bytes and database integrity during repair.
+
+
+## Optional public PC-game requests
+
+`--pc-runtime` adds the allowlisted DroidDeck/GameNative Steam launch adapter,
+Android Java wrapper, two explicit package-visibility entries and `pcRuntime`
+context. It adds no Android permission or service. It may be combined with
+`--rom-cloud --stopping-notes --controller-check`; the paired manifest records
+all inputs. The public recipe remains separate from a recorder-preserving
+personal APK. See [the PC adapter contract](../native/pcgames/README.md).

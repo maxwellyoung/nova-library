@@ -43,6 +43,21 @@
         function cleanupPlan(id) {var c=removalPlan(9);c.title="Synthetic Arcade";c.system="SNES";c.cover="";return {candidates:[c]};}
         function removeDownload(id, token) {if(token === "fixture-"+removalGeneration+":"+id)called="remove:"+id;else message="Synthetic stale preview refused";}
     }
+    QtObject {
+        id:syntheticPc
+        property int capabilityVersion:1
+        property var runtimes:[{id:"droiddeck",name:"DroidDeck",version:"0.7.0",available:true,supported:true},{id:"gamenative",name:"GameNative",version:"1.4.0",available:true,supported:true}]
+        property bool accepts:true
+        property int requests:0
+        property string requested:""
+        function refresh(){}
+        function openGame(edition,id,version){
+            requests++;requested=edition+"|"+id+"|"+version;
+            var state=runtimes.filter(function(r){return r.id===id;})[0];
+            if(!state || !state.available || !state.supported || state.version!==version)return {accepted:false,message:"The runtime version changed. Review PC runtime before trying again."};
+            return accepts?{accepted:true,code:"dispatched"}:{accepted:false,message:"Synthetic runtime refused the request."};
+        }
+    }
     Timer {
         interval: 1500; running: true; repeat: false
         function require(value, reason) { if (!value) throw new Error(reason); }
@@ -87,6 +102,48 @@
             return {id:41,title:"Synthetic Cloud Adventure",system:"Super Nintendo",platform:"snes",bytes:524288,
                 installed:installed,partial:false,supported:true,cover:cover || "",observedAt:"2026-11-06T00:00:00Z",
                 editionId:"nova:cloud_"+scope+":41_"+revision,cloudKey:"cloud:"+scope+":41"};
+        }
+        function pcFixture(ui) {
+            var e={};Object.keys(ui.rawEntries[0]).forEach(function(k){e[k]=ui.rawEntries[0][k];});
+            e.id="steam:123";e.title="Synthetic Windows Adventure";e.sortKey=e.title.toLowerCase();e.systemId="pc";e.systemName="PC";e.launchable=false;e.route="";e.game={missing:true,launch:function(){throw new Error("PC request silently fell back to a file route");}};return e;
+        }
+        function checkPcRuntime(ui) {
+            var entries=ui.rawEntries,previousIndex=ui.entryById,previous=window.pcRuntime,choices=ui.pcChoices,oldStates=syntheticPc.runtimes;
+            var had=window.api.memory.has("pcRuntimeChoicesV1"),stored=had?window.api.memory.get("pcRuntimeChoicesV1"):null;
+            var e=pcFixture(ui);ui.rawEntries=entries.concat([e]);var indexed={};ui.rawEntries.forEach(function(x){indexed[x.id]=x;});ui.entryById=indexed;ui.rebuildPresentations();ui.rebuildLibrary(e.id);ui.setLibIndex(ui.libraryEntries.map(function(x){return x.id;}).indexOf(e.id));
+            ui.overlay="";ui.switchView("library");ui.zone="content";window.pcRuntime=syntheticPc;syntheticPc.requests=0;syntheticPc.accepts=true;
+            ui.playEdition(e);require(ui.overlay==="pcruntime" && ui.pcTargetId===e.id,"unrouted Steam primary did not offer exact-edition runtimes");
+            require(ui.pcRows().length===2 && ui.pcRows()[0].available,"allowed app state did not populate runtime choices");
+            key(ui,Qt.Key_Escape);require(ui.overlay==="" && ui.current.id===e.id,"runtime Back lost Library origin");
+            ui.openDetails();var action=ui.detailActions().map(function(a){return a.a;}).indexOf("pcruntime");require(action>=0,"Details has no PC runtime action");ui.runDetailAction(action);
+            key(ui,Qt.Key_Return);require(syntheticPc.requested==="steam:123|droiddeck|0.7.0","request changed identity/backend/version");
+            require(ui.pcChoices.value.choices[e.id].runtime==="droiddeck" && !e.launchable,"accepted request promoted a file route or lost its explicit choice");
+            require(ui.pcNotice.indexOf("boot is not confirmed")>=0,"dispatch notice claimed gameplay");
+            key(ui,Qt.Key_Escape);require(ui.overlay==="details","runtime Back did not restore Details");key(ui,Qt.Key_Escape);
+            var count=syntheticPc.requests;ui.playEdition(e);require(syntheticPc.requests===count+1,"remembered runtime did not dispatch directly");
+            syntheticPc.runtimes=[{id:"droiddeck",version:"0.7.1",available:true,supported:false},{id:"gamenative",version:"1.4.0",available:true,supported:true}];
+            ui.playEdition(e);require(ui.overlay==="pcruntime" && ui.pcChoices.value.choices[e.id].version==="0.7.0","runtime update silently retargeted a preference");
+            key(ui,Qt.Key_Down);key(ui,Qt.Key_Return);require(ui.pcChoices.value.choices[e.id].runtime==="gamenative","explicit alternative was not remembered");
+            var persisted=JSON.stringify(window.api.memory.get("pcRuntimeChoicesV1"));ui.pcChoices={readable:true,value:{version:1,choices:{}}};ui.loadPcChoices();require(ui.pcChoices.value.choices[e.id].runtime==="gamenative","memory reload lost backend choice");
+            syntheticPc.accepts=false;key(ui,Qt.Key_Up);key(ui,Qt.Key_Return);require(JSON.stringify(window.api.memory.get("pcRuntimeChoicesV1"))===persisted,"refused request replaced the saved choice");
+            syntheticPc.runtimes=oldStates;syntheticPc.accepts=true;window.api.memory.refuseWrites=true;key(ui,Qt.Key_Return);window.api.memory.refuseWrites=false;
+            require(ui.pcNotice.indexOf("not saved")>=0 && JSON.stringify(window.api.memory.get("pcRuntimeChoicesV1"))===persisted,"failed preference write was not visible/preserved");
+            key(ui,Qt.Key_Escape);window.pcRuntime=null;ui.playEdition(e);require(ui.overlay==="pcruntime" && ui.pcNotice.indexOf("matching native")>=0,"missing adapter silently fell back");
+            window.pcRuntime=syntheticPc;ui.openPcOptions(e);
+            var beforeFocusFailure=syntheticPc.requests;window.api.memory.refuseAllWrites=true;ui.requestPcGame(e,"droiddeck","0.7.0");window.api.memory.refuseAllWrites=false;
+            require(syntheticPc.requests===beforeFocusFailure && ui.pcNotice.indexOf("Nothing was requested")>=0,"failed return-focus save still dispatched");
+            var legacyRequests=0;e.launchable=true;e.game={missing:false,launch:function(){legacyRequests++;}};ui.openPcOptions(e);
+            ui.panelIndex=ui.pcRows().map(function(r){return !!r.legacy;}).indexOf(true);key(ui,Qt.Key_Return);
+            require(legacyRequests===1 && !ui.pcChoices.value.choices[e.id],"explicit existing shortcut did not clear the separate runtime choice");
+            ui.openPcOptions(e);ui.panelIndex=0;key(ui,Qt.Key_Return);var beforeForget=syntheticPc.requests;
+            ui.panelIndex=ui.pcRows().map(function(r){return !!r.forget;}).indexOf(true);key(ui,Qt.Key_Return);
+            require(!ui.pcChoices.value.choices[e.id] && syntheticPc.requests===beforeForget,"forget choice dispatched or retained the preference");
+            e.launchable=false;e.game={missing:true,launch:function(){throw new Error("unexpected fallback");}};
+            var corrupt={version:99,choices:{}};window.api.memory.set("pcRuntimeChoicesV1",corrupt);ui.loadPcChoices();window.pcRuntime=syntheticPc;ui.openPcOptions(e);key(ui,Qt.Key_Return);
+            require(window.api.memory.get("pcRuntimeChoicesV1").version===99 && ui.pcNotice.indexOf("not saved")>=0,"corrupt preferences were overwritten");
+            if(had)window.api.memory.set("pcRuntimeChoicesV1",stored);else window.api.memory.unset("pcRuntimeChoicesV1");
+            ui.pcChoices=choices;syntheticPc.runtimes=oldStates;syntheticPc.accepts=true;window.pcRuntime=previous;ui.overlay="";ui.pcTargetId="";ui.pcNotice="";ui.rawEntries=entries;ui.entryById=previousIndex;ui.rebuildPresentations();ui.rebuildLibrary("");
+            console.log("NOVA_PC_RUNTIME_PASS: exact identity, explicit selection, memory reload, changed version, failed dispatch/write, corrupt preferences, older bridge and origin Back");
         }
         function checkDownloadQueue(ui) {
             var previous=window.romCloud,previousGames=syntheticCloud.games;
@@ -327,7 +384,7 @@
                 require(themeLoader.status === Loader.Ready, "theme loader failed");
                 var ui=themeLoader.item;
                 checkRecorderLaunch(ui);
-                checkIntegratedCloud(ui);checkDownloadQueue(ui);
+                checkIntegratedCloud(ui);checkDownloadQueue(ui);checkPcRuntime(ui);
                 checkPhoneAudio(ui);
                 var artComponent=Qt.createComponent("../theme/ArtView.qml");
                 require(artComponent.status === Component.Ready,"art component failed");
@@ -666,6 +723,14 @@
                         var phoneApp={};Object.keys(ui.rawEntries[0]).forEach(function(k){phoneApp[k]=ui.rawEntries[0][k];});
                         phoneApp.id="demo:phone-audio";phoneApp.systemId="androidapps";phoneApp.appPackage="io.github.jqssun.airplay";phoneApp.launchable=true;phoneApp.game={missing:false,launch:function(){}};
                         ui.rawEntries=ui.rawEntries.concat([phoneApp]);ui.rebuildPresentations();ui.overlay="";ui.switchView("apps");ui.openPanel("phoneaudio",0);
+                    } else if (screenshotSurface.indexOf("pc-")===0) {
+                        var pe=pcFixture(ui);pe.title="Synthetic Windows Adventure — The Second Journey";ui.rawEntries=ui.rawEntries.concat([pe]);var pcIndex={};ui.rawEntries.forEach(function(e){pcIndex[e.id]=e;});ui.entryById=pcIndex;ui.rebuildPresentations();ui.rebuildLibrary(pe.id);ui.setLibIndex(ui.libraryEntries.map(function(e){return e.id;}).indexOf(pe.id));ui.switchView("library");ui.zone="content";
+                        window.pcRuntime=syntheticPc;
+                        if(screenshotSurface==="pc-missing")syntheticPc.runtimes=[];
+                        else if(screenshotSurface==="pc-changed")syntheticPc.runtimes=[{id:"droiddeck",available:true,supported:false,version:"0.7.1"},{id:"gamenative",available:true,supported:true,version:"1.4.0"}];
+                        ui.openPcOptions(pe);
+                        if(screenshotSurface==="pc-failure")ui.pcNotice="The runtime could not accept this request. No fallback was opened; games and saves are unchanged.";
+                        if(screenshotSurface==="pc-remembered"){ui.savePcChoice(pe,{runtime:"droiddeck",version:"0.7.0"});ui.closeOverlay();ui.openDetails();}
                     } else if (screenshotSurface.indexOf("queue-")===0) {
                         syntheticCloud.queueVersion=1;window.romCloud=syntheticCloud;
                         var qg=cloudFixture(false,ui.rawEntries[0].art);syntheticCloud.games=[qg];

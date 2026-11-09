@@ -4,11 +4,12 @@ import "library.js" as Lib
 import "Owner.js" as Owner
 import "Guides.js" as Guides
 import "Compatibility.js" as Compatibility
+import "PcGames.js" as PC
 
 // Personal Library: Home is a shelf, Library is an index, Threads holds kept groups and
 // explained suggestions. Covers carry the colour; focus is light, size and a plain edge.
-// Nothing here starts a game unless the exporter marked a local route and Pegasus still
-// sees the file. Progress is only what someone wrote down; play time stays separate.
+// File routes require catalogue readiness and a present file. The optional PC adapter
+// sends an explicitly chosen Steam request; dispatch never proves game boot or play time.
 FocusScope {
     id: root
     focus: true
@@ -52,6 +53,11 @@ FocusScope {
     property int appIndex: 0
     property string appsReturnView: "home"
     property var pins: []
+    property var pcChoices: PC.freshChoices()
+    property string pcTargetId: ""
+    property string pcNotice: ""
+    readonly property var pcBridge: typeof pcRuntime !== "undefined" && pcRuntime && pcRuntime.capabilityVersion === 1
+        && typeof pcRuntime.refresh === "function" && typeof pcRuntime.openGame === "function" ? pcRuntime : null
     property var appearance: ({ surface: "dark", size: "standard", time: false, motion: true })
 
     property var sessions: ({version:1, labels:{}})
@@ -468,6 +474,7 @@ FocusScope {
         if (api.memory.has("launchProbe") && typeof api.memory.unset === "function")
             api.memory.unset("launchProbe");
 
+        loadPcChoices();
         var storedPins = memGet("pins", []);
         var cleanPins = [];
         if (storedPins && storedPins.length !== undefined)
@@ -623,6 +630,12 @@ FocusScope {
     function playEdition(e) {
         if (!e)
             return;
+        if(PC.steamId(e) && (PC.choice(e,pcChoices) || !e.launchable && pcBridge)) {
+            var selectedRuntime=PC.choice(e,pcChoices);
+            if(selectedRuntime && pcBridge)requestPcGame(e,selectedRuntime.runtime,selectedRuntime.version);
+            else openPcOptions(e);
+            return;
+        }
         if(e.cloudId) {
             if(!integratedCloud)return;
             if(!e.launchable || cloudBridge.busy) {openCloud(e);return;}
@@ -754,6 +767,7 @@ FocusScope {
     }
 
     function closeOverlay() {
+        if(overlay === "pcruntime"){overlay=overlayReturn==="details"?"details":"";overlayReturn="";pcTargetId="";pcNotice="";return;}
         if(overlay === "notebook"){notebookPanel.back();return;}
         if (overlay === "facts") {
             overlay = checkDetail ? "checks" : "details";
@@ -1015,7 +1029,7 @@ FocusScope {
             return parts.join(" · ");
         }
         var r = e.cloudId ? Lib.availabilityText(e) : Lib.isApp(e) ? Lib.shortRoute(e) : (view === "library" && !e.launchable ? "" : Lib.availabilityText(e) + " · ")
-            + (e.launchable ? Lib.shortRoute(e) : "No launch route here");
+            + (PC.choice(e,pcChoices) ? "Runtime · "+PC.chosenName(e,pcChoices) : e.launchable ? Lib.shortRoute(e) : "No launch route here");
         if (r)
             parts.push(r);
         if (e.discMembers) parts.push("Disc " + e.discNumber + " record");
@@ -1030,7 +1044,7 @@ FocusScope {
         if (!e)
             return [];
         var out = [];
-        out.push({ t: Lib.routeSentence(e), q: false });
+        out.push({ t: PC.choice(e,pcChoices) ? (e.launchable ? "A separate catalogue shortcut is also available." : "No separate catalogue file shortcut is configured.") : Lib.routeSentence(e), q: false });
         if (Lib.isApp(e)) {
             if (Lib.appPurpose(e)) out.push({ t: Lib.appPurpose(e) + ".", q: false });
             return out;
@@ -1048,6 +1062,7 @@ FocusScope {
             out.push({ t: droidDeckApp()
                 ? "Open DroidDeck, then search “" + e.title + "” in Steam to check or install it there."
                 : "DroidDeck isn't configured here. Check this game in your Steam app; Library cannot install it from this entry.", q: false });
+        if(PC.choice(e,pcChoices))out.push({t:PC.actionLabel(e,pcChoices)+" is a remembered app request. It does not confirm this game's installation or boot.",q:true});
         if (e.compatibilityReceipts) out.push({ t: Compatibility.summary(e, now) + ". Open Checks for the tested setup and each observation.", q: true });
         if (e.novaGameplayNote && e.novaGameplaySource && e.novaGameplayObservedAt && Lib.dateEvidenceText(e.novaGameplayObservedAt) !== "Date unknown")
             out.push({ t: "Earlier short check on Nova · " + Lib.dateEvidenceText(e.novaGameplayObservedAt) + " · " + e.novaGameplaySource + ": " + e.novaGameplayNote, q: true });
@@ -1103,7 +1118,7 @@ FocusScope {
         if (!e) return [];
         if (Lib.isApp(e)) return (Lib.appPurpose(e) ? [{ t: Lib.appPurpose(e), q: false, icon: "apps" }] : [])
             .concat([{ t: e.launchable ? "App shortcut set up here" : "App shortcut not set up here", q: true, icon: "info" }]);
-        var out = [{ t: e.cloudId ? Lib.availabilityText(e) : e.discMembers ? e.discMembers.length + " discs · " + Lib.discReadyCount(e) + " set up here" : e.launchable ? (e.route || "Local shortcut configured") : "No launch route here", q: true }];
+        var out = [{ t: e.cloudId ? Lib.availabilityText(e) : e.discMembers ? e.discMembers.length + " discs · " + Lib.discReadyCount(e) + " set up here" : PC.choice(e,pcChoices) ? "Chosen runtime · "+PC.chosenName(e,pcChoices) : e.launchable ? (e.route || "Local shortcut configured") : "No launch route here", q: true }];
         if(e.cloudId)out.push({t:"Cloud saves are not enabled. Uses this Nova's emulator saves.",q:true});
         if (e.discMembers) { out.push({ t: "Disc " + e.discNumber + " progress record", q: true, icon: "note" }); e = e.discEdition; }
         var checked = e.novaGameplayNote && e.novaGameplaySource && Lib.dateEvidenceText(e.novaGameplayObservedAt) !== "Date unknown";
@@ -1138,6 +1153,51 @@ FocusScope {
         }).slice(0,4-out.length));
     }
 
+    function loadPcChoices(){pcChoices=PC.readChoices(api.memory.has("pcRuntimeChoicesV1")?api.memory.get("pcRuntimeChoicesV1"):undefined);}
+    function pcOptionsAvailable(e) {return !!PC.steamId(e) && (!!pcBridge || !!PC.choice(e,pcChoices));}
+    function pcEntry() {return entryById[pcTargetId] || null;}
+    function pcRows() {
+        var e=pcEntry();
+        if(!e)return [{label:"Game unavailable",value:"Return to Library",available:false,dim:true,reason:"This edition is no longer in the catalogue. No request will be sent."}];
+        return PC.rows(pcBridge?pcBridge.runtimes:[],e,pcChoices);
+    }
+    function refreshPcRuntimes() {
+        pcNotice="";
+        if(pcBridge){try{pcBridge.refresh();}catch(error){pcNotice="The runtime apps could not be checked. Nothing was requested.";}}
+        else pcNotice="PC requests need the matching native Library build. Your existing shortcuts are unchanged.";
+    }
+    function openPcOptions(e) {
+        if(!PC.steamId(e))return;
+        pcTargetId=e.id;refreshPcRuntimes();openPanel("pcruntime",0);
+        var saved=PC.choice(e,pcChoices);if(saved)pcRows().forEach(function(row,i){if(row.runtime===saved.runtime)panelIndex=i;});
+    }
+    function savePcChoice(e,value) {
+        var next=PC.editChoice(pcChoices,e.id,value);if(!next)return false;
+        try{api.memory.set("pcRuntimeChoicesV1",next.value);pcChoices=next;return true;}catch(error){return false;}
+    }
+    function requestPcGame(e,runtime,version) {
+        if(!pcBridge || !PC.steamId(e)){openPcOptions(e);return;}
+        saveTimer.stop();
+        try{saveFocus();}catch(error){if(overlay!=="pcruntime")openPcOptions(e);pcNotice="Library could not save its return position. Nothing was requested.";return;}
+        var response;
+        try{response=pcBridge.openGame(e.id,runtime,version);}catch(error){response={accepted:false,message:"The runtime request failed. No fallback was opened."};}
+        if(response && response.accepted===true){
+            var saved=savePcChoice(e,{runtime:runtime,version:version});
+            pcNotice="Request handed to the selected runtime. Game boot is not confirmed."+(saved?"":" Runtime choice was not saved; existing preferences were kept.");
+            say(pcNotice);
+        } else {
+            if(overlay!=="pcruntime" || pcTargetId!==e.id)openPcOptions(e);
+            pcNotice=response && response.message || "The runtime could not accept this request. No fallback was opened.";
+        }
+    }
+    function activatePcRuntime(i) {
+        var row=pcRows()[i],e=pcEntry();if(!row || !e)return;
+        if(!row.available){pcNotice=row.reason;return;}
+        if(row.forget){if(!savePcChoice(e,null)){pcNotice="Runtime choices could not be saved. Existing preferences were kept.";return;}pcNotice="Runtime choice forgotten. Games and saves were kept.";panelIndex=0;return;}
+        if(row.legacy){if(!savePcChoice(e,null)){pcNotice="The saved runtime choice could not be cleared. Nothing was opened.";return;}playEdition(e);return;}
+        requestPcGame(e,row.runtime,row.version);
+    }
+
     function storageApp(kind) {
         if (kind === "steam") return droidDeckApp();
         return rawEntries.filter(function(e) { return e.systemId === "androidapps" && e.title === "Files" && e.launchable && !e.game.missing; })[0] || null;
@@ -1162,9 +1222,10 @@ FocusScope {
             return [];
         var out = [];
         if (Lib.isApp(e)) return (e.launchable ? [{ a: "play", l: "Open app" }] : []).concat([{ a: "facts", l: "Info" }]);
-        if (e.discMembers || e.launchable || e.cloudId && e.cloudSupported) out.push({ a: "play", l: e.discMembers ? "Choose disc" : e.cloudId ? Lib.cloudActionLabel(e) : "Play" });
+        if (e.discMembers || e.launchable || e.cloudId && e.cloudSupported || PC.choice(e,pcChoices)) out.push({ a: "play", l: e.discMembers ? "Choose disc" : e.cloudId ? Lib.cloudActionLabel(e) : PC.choice(e,pcChoices) ? PC.actionLabel(e,pcChoices) : "Play" });
         if(e.cloudId)out.push({a:"downloads",l:"Download details"});
-        if (Lib.isSteamGame(e) && !e.launchable && droidDeckApp()) out.push({ a: "droiddeck", l: "Open DroidDeck" });
+        if(pcOptionsAvailable(e))out.push({a:"pcruntime",l:"PC runtime"});
+        else if (Lib.isSteamGame(e) && !e.launchable && droidDeckApp()) out.push({ a: "droiddeck", l: "Open DroidDeck" });
         if (Guides.available(e)) out.push({ a: "guide", l: "Controls" });
         out.push({ a: "checks", l: "Checks" });
         out.push({ a: "facts", l: "Info" });
@@ -1185,6 +1246,7 @@ FocusScope {
         if (a === "play") play(current);
         else if(a === "downloads")openCloud(current);
         else if (a === "droiddeck") openDroidDeck();
+        else if (a === "pcruntime") openPcOptions(current);
         else if (a === "guide") openPanel("guide", 0);
         else if (a === "checks") openPanel("checks", 0);
         else if (a === "facts") { checkDetail = null; overlay = "facts"; detailFlick.contentY = 0; }
@@ -1197,6 +1259,7 @@ FocusScope {
 
     // Settings and its read-only guides reuse the existing list panel.
     function panelTitle() {
+        if(overlay === "pcruntime")return pcEntry()?"PC runtime · "+Lib.displayTitle(pcEntry()):"PC runtime";
         if (overlay === "discs") return discTarget ? discTarget.title + " · choose a disc" : "Choose a disc";
         if (overlay === "settings") return "Settings";
         if (overlay === "guide") return current ? current.title + " · controls" : "Controls";
@@ -1215,7 +1278,7 @@ FocusScope {
     }
 
     function isListPanel() {
-        return ["discs", "settings", "appearance", "storage", "controls", "refresh", "filters", "session", "status", "threadpick", "guide", "checks", "about", "phoneaudio"].indexOf(overlay) !== -1;
+        return ["discs", "settings", "appearance", "storage", "controls", "refresh", "filters", "session", "status", "threadpick", "guide", "checks", "about", "phoneaudio", "pcruntime"].indexOf(overlay) !== -1;
     }
 
     function storageRows() {
@@ -1289,6 +1352,7 @@ FocusScope {
     }
 
     function panelRows(rev) {
+        if(overlay === "pcruntime")return pcRows();
         if (overlay === "discs") return discTarget ? discTarget.discMembers.map(function(e) {
             return { label: "Disc " + e.discNumber, value: e.game.missing ? "File missing here" : e.launchable ? "Set up here" : "Not set up here" };
         }) : [];
@@ -1378,6 +1442,7 @@ FocusScope {
     }
 
     function panelFooter(rev) {
+        if(overlay === "pcruntime"){var pcRow=pcRows()[panelIndex];return pcNotice || (pcRow?pcRow.reason:"") + (!pcChoices.readable?" Saved choices need review and will not be overwritten.":"");}
         if (overlay === "discs") {
             var member = discTarget && discTarget.discMembers[panelIndex];
             return member ? Lib.routeSentence(member)
@@ -1444,6 +1509,7 @@ FocusScope {
     }
 
     function panelActivate(i, step) {
+        if(overlay === "pcruntime"){activatePcRuntime(i);return;}
         panelIndex = i;
         if (overlay === "discs") {
             var member = discTarget && discTarget.discMembers[i];
@@ -1481,6 +1547,7 @@ FocusScope {
     }
 
     function hints() {
+        if(overlay === "pcruntime"){var pcRow=pcRows()[panelIndex];return [{k:kAccept,l:pcRow && pcRow.available?(pcRow.forget?"Forget choice":pcRow.legacy?"Use shortcut":"Open here"):"Unavailable",a:"panel"},{k:kDetails,l:"Refresh",a:"pcrefresh"},{k:kCancel,l:"Back",a:"close"}];}
         if (overlay === "notebook") return notebookPanel.hints();
         if (overlay === "controller") return controllerPanel.hints();
         if (overlay === "facts") return (detailFlick.contentHeight > detailFlick.height+1 ? [{k:"↑ ↓",l:"Read",a:"readfacts"}] : []).concat([{ k: kCancel, l: "Back", a: "close" }]);
@@ -1538,10 +1605,11 @@ FocusScope {
         if (view === "home" && !allEntries.length)
             return [{ k:kAccept, l:"Library setup", a:"setup" }];
         var h = [];
-        if (current && current.cloudId && !current.launchable && current.cloudSupported) h.push({ k: kAccept, l: Lib.cloudActionLabel(current), a: "play" });
+        if (pcOptionsAvailable(current) && (!current.launchable || PC.choice(current,pcChoices))) h.push({k:kAccept,l:PC.actionLabel(current,pcChoices),a:"play"});
+        else if (current && current.cloudId && !current.launchable && current.cloudSupported) h.push({ k: kAccept, l: Lib.cloudActionLabel(current), a: "play" });
         else if (current && !current.launchable && !current.discMembers) h.push({ k: kAccept, l: "Details", a: "play" });
-        if (current && (current.discMembers || current.launchable)) h.push({ k: kAccept, l: current.discMembers ? "Choose disc" : "Play", a: "play" });
-        if (current && (current.launchable || current.discMembers || current.cloudId)) h.push({ k: kDetails, l: "Details", a: "details" });
+        if (current && (current.discMembers || current.launchable) && !PC.choice(current,pcChoices)) h.push({ k: kAccept, l: current.discMembers ? "Choose disc" : "Play", a: "play" });
+        if (current && (current.launchable || current.discMembers || current.cloudId || pcOptionsAvailable(current))) h.push({ k: kDetails, l: "Details", a: "details" });
         if (current) h.push({ k: kKeep, l: (currentPinned ? "Unfavourite" : "Favourite") + (current.discMembers ? " disc " + current.discNumber : ""), a: "keep" });
         if (view === "library") h.push({ k: kCancel, l: fromConsole ? "Consoles" : "Home", a: "libraryback" });
         if (view === "threads" && threadZone === "members") h.push({ k: kCancel, l: "Collections", a: "threadback" });
@@ -1549,6 +1617,7 @@ FocusScope {
     }
 
     function runHint(a) {
+        if(a === "pcrefresh"){refreshPcRuntimes();return;}
         if (a.indexOf("notebook:") === 0) notebookPanel.runHint(a.slice(9));
         else if (a.indexOf("controller:") === 0) controllerPanel.runHint(a.slice(11));
         else if (a === "setup") { openPanel("settings",4); panelActivate(4,1); }
@@ -1686,6 +1755,7 @@ FocusScope {
             else if (cycles && k.isRight(event)) panelActivate(panelIndex, 1);
             else if (cycles && k.isLeft(event)) panelActivate(panelIndex, -1);
             else if (overlay === "filters" && k.isDetails(event)) clearFilters();
+            else if (overlay === "pcruntime" && k.isDetails(event)) refreshPcRuntimes();
             else event.accepted = false;
             return;
         }

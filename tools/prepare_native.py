@@ -80,7 +80,7 @@ def clone_local(source, dest, commit):
         clone_local(source / name, dest / name, revision)
 
 
-def prepare(upstream, output, cloud=False, root=ROOT, *, stopping_notes=False, controller_check=False):
+def prepare(upstream, output, cloud=False, root=ROOT, *, stopping_notes=False, controller_check=False, pc_runtime=False):
     if Path(upstream).is_symlink() or Path(output).is_symlink():
         raise ValueError('Linked workspace roots require separate review')
     upstream, output, root = Path(upstream).resolve(), Path(output).resolve(), Path(root).resolve()
@@ -112,6 +112,10 @@ def prepare(upstream, output, cloud=False, root=ROOT, *, stopping_notes=False, c
         for name in ('ControllerCheck.cpp', 'ControllerCheck.h', 'QtGamepadObserver.cpp',
                      'QtGamepadObserver.h', 'ControllerCheckHost.cpp', 'ControllerCheckHost.h', 'controllercheck.pri'):
             inputs['native/controllercheck/' + name] = sha(root / 'native/controllercheck' / name)
+    if pc_runtime:
+        inputs['tools/apply_pc_runtime.py'] = sha(root / 'tools/apply_pc_runtime.py')
+        for name in ('PcRuntime.h','PcRuntime.cpp','pcgames.pri','PcLaunchContract.java','PcRuntimeBridge.java'):
+            inputs['native/pcgames/'+name] = sha(root / 'native/pcgames' / name)
     output.mkdir(parents=True, exist_ok=False)
     marker = output / 'PREPARATION-INCOMPLETE'
     marker.write_text('Do not build or distribute this workspace until preparation succeeds.\n')
@@ -132,6 +136,9 @@ def prepare(upstream, output, cloud=False, root=ROOT, *, stopping_notes=False, c
     if controller_check:
         subprocess.run(['python3', str(root / 'tools/apply_controller_check.py'), str(source),
                         '--backup', str(output / 'controller-check-integration-before')], check=True, stdout=subprocess.DEVNULL)
+    if pc_runtime:
+        subprocess.run(['python3',str(root / 'tools/apply_pc_runtime.py'),str(source),
+                        '--backup',str(output / 'pc-runtime-integration-before')],check=True,stdout=subprocess.DEVNULL)
     for name, digest in theme_hashes.items():
         data = (root / 'theme' / name).read_bytes()
         if hashlib.sha256(data).hexdigest() != digest:
@@ -145,7 +152,7 @@ def prepare(upstream, output, cloud=False, root=ROOT, *, stopping_notes=False, c
     manifest = {'schemaVersion': 1, 'upstream': {'repository': spec['repository'],
                 'commit': spec['commit'], 'submodules': pins},
                 'components': {'nativeBridge': True, 'romCloud': cloud, 'externalTheme': True,
-                               'stoppingNotes': stopping_notes, 'controllerCheck': controller_check},
+                               'stoppingNotes': stopping_notes, 'controllerCheck': controller_check, 'pcRuntime': pc_runtime},
                 'inputs': inputs, 'nativeFiles': tree(source), 'themeFiles': tree(output / 'theme'),
                 'limits': ['Source pairing only; not a build or installation receipt.',
                            'Private recorder/service code is not imported from other worktrees.',
@@ -194,12 +201,13 @@ def main():
     p.add_argument('--rom-cloud', action='store_true')
     p.add_argument('--stopping-notes', action='store_true')
     p.add_argument('--controller-check', action='store_true')
+    p.add_argument('--pc-runtime', action='store_true')
     p = commands.add_parser('verify')
     p.add_argument('output', type=Path)
     args = parser.parse_args()
     try:
         result = prepare(args.upstream, args.output, args.rom_cloud,
-                         stopping_notes=args.stopping_notes, controller_check=args.controller_check) if args.command == 'prepare' else verify(args.output)
+                         stopping_notes=args.stopping_notes, controller_check=args.controller_check, pc_runtime=args.pc_runtime) if args.command == 'prepare' else verify(args.output)
         print(json.dumps({'nativeFiles': len(result['nativeFiles']), 'themeFiles': len(result['themeFiles']),
                           'components': result['components'], 'verified': True}))
     except (ValueError, OSError, subprocess.CalledProcessError) as error:

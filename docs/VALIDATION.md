@@ -58,3 +58,32 @@ combined Android candidate compiles, links and packages with the original signer
 its binary manifest and five DEX files match the prior recovery build. Its external
 theme is paired separately. Build inclusion is not device installation, approval,
 background execution, safe cloud-save restoration or full dreamlist acceptance.
+
+
+## Optional PC runtime requests — 9 November 2026
+
+The native PC adapter passes 23 cases on each of Qt 5.15.10 and Qt 6.11.1. Injected
+platform tests exercise exact Steam IDs, permitted backend selection, malformed
+observations, foreground/version changes, refused dispatch and result
+minimisation without fallback. The actual Java target allowlist passes host-JDK
+checks; the Android wrapper compiles in the private candidate against SDK 30.
+
+The current source suite passes 94 Node cases and 168 Python cases, including
+private/bounded per-edition choices, preference preservation, explicit preparation,
+package queries, refusal/rollback and a fresh paired source. Public preparation
+with Cloud, notebook, controller check and PC runtime together passes.
+
+Desktop Qt exercises installed/missing/changed/refused/remembered states across
+Nova 4:3, small light/large and wide dark/large profiles. The key harness covers
+explicit selection, memory reload, direct remembered requests, changed/missing
+adapter review, failed dispatch/preference/focus writes, corrupt preferences,
+explicit legacy route/forget and original Library/Details Back. These are
+synthetic states and injected keys, not Android app queries or physical buttons.
+
+The private Android APK builds and its linked runtime sections match the linked
+output. Signer and Android permissions match the previous queue candidate. The
+existing recorder/foreground/verification/surface compiled classes are byte-equal
+and present in DEX; four DEX files remain identical and the app DEX changes with
+the new helpers. The final external theme is separately paired over the identical
+native tree after UI text cleanup. No deployment, runtime upgrade, actual PC launch,
+performance, save restoration or owner acceptance is established by this work.
