@@ -3,6 +3,7 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 from tools import save_vault as v
 from tools.save_catalogue import Catalogue
@@ -46,6 +47,13 @@ class SaveVaultTests(unittest.TestCase):
         token='A'*40;server=v.server(self.root,token);thread=threading.Thread(target=server.serve_forever);thread.start()
         try:
             origin='http://127.0.0.1:'+str(server.server_port);client=v.Client(origin,token)
+            original_request=client.request
+            def lose_reply(*args,**kwargs):
+                original_request(*args,**kwargs)
+                raise v.VaultError('Synthetic lost reply after real durable commit')
+            with patch.object(client,'request',side_effect=lose_reply):
+                with self.assertRaises(v.VaultError):client.put(self.intent)
+            self.assertIn('queued',self.model.statuses(self.rev))
             ack=client.put(self.intent);self.model.acknowledge_upload(*ack)
             self.assertEqual(client.put(self.intent),ack)
             reader=SyncModel(IDENTITY);client.inventory(reader)

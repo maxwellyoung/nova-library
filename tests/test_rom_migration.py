@@ -34,3 +34,15 @@ class MigrationTests(unittest.TestCase):
         (self.source/'memory.srm').write_bytes(b'precious save');p=m.plan(self.source,self.entries);out=self.root/'card';m.copy(p,out,approved_digest=p['planSha256'])
         self.assertFalse((out/'memory.srm').exists());(out/'game.bin').write_bytes(b'wrong')
         with self.assertRaises(m.MigrationError):m.verify(out)
+
+    def test_explicit_resume_validates_prefix_and_uses_same_edition_plan(self):
+        p=m.plan(self.source,self.entries);out=self.root/'card';out.mkdir();(out/'MIGRATION-INCOMPLETE').write_text(p['planSha256']+'\n');(out/'game.bin').write_bytes(b'original')
+        result=m.copy(p,out,approved_digest=p['planSha256'],resume=True);self.assertEqual(m.verify(out),result)
+        self.assertEqual(m.copy(p,out,approved_digest=p['planSha256'],resume=True),result)
+    def test_changed_partial_prefix_or_unmanaged_file_is_preserved_and_refused(self):
+        p=m.plan(self.source,self.entries);out=self.root/'card';out.mkdir();(out/'MIGRATION-INCOMPLETE').write_text(p['planSha256']+'\n');(out/'game.bin').write_bytes(b'wrong')
+        with self.assertRaises(m.MigrationError):m.copy(p,out,approved_digest=p['planSha256'],resume=True)
+        self.assertEqual((out/'game.bin').read_bytes(),b'wrong');self.assertTrue((out/'MIGRATION-INCOMPLETE').exists())
+        (out/'precious.txt').write_text('keep')
+        with self.assertRaises(m.MigrationError):m.copy(p,out,approved_digest=p['planSha256'],resume=True)
+        self.assertEqual((out/'precious.txt').read_text(),'keep')

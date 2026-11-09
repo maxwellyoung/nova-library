@@ -19,8 +19,10 @@ The plan binds every edition, relative path, byte count and checksum. Changed pl
 or source, existing destination, links, overlapping names, reserved control names
 and insufficient destination space refuse. Originals remain even after success.
 An interrupted destination keeps MIGRATION-INCOMPLETE and cannot verify; preserve
-it for review or retry into a separate new directory. This first copy adapter does
-not implement partial-file resume or automatically clean failed copies.
+it for review. Explicit `copy --resume` requires the identical plan, validates
+every existing byte prefix against its source, appends only remaining bytes and
+rechecks full hashes. A changed prefix or unmanaged file is preserved and refused.
+There is no automatic cleanup of failed copies.
 
 The receipt preserves edition IDs as data. It does not prove history continuity
 after a real launcher change. Before selecting the new path on Android, review
