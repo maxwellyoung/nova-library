@@ -66,6 +66,8 @@ Run these commands from this repository's root. The checker is read-only and rej
 
 The patch adds SQLite-backed offline actions, snapshot validation, conflict retention, optional synchronization, Android credential storage, and Linux Secret Service integration. The private server implementation, enrollment, tokens, inventories and user ledger are deliberately absent. No service is required for the theme or synthetic demo. Sync requires a compatible service and separately provisioned device capability; this repository is not a turnkey server deployment.
 
+The [Switch 4:3 source audit](docs/SWITCH-4X3.md) checks exact declared game/build identity and flags patch conflicts before device review. It does not install mods or establish Switch gameplay readiness.
+
 ## Check the source
 
 ```sh
