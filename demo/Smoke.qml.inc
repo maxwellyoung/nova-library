@@ -41,7 +41,7 @@
         property int removalGeneration: 1
         function removalPlan(id) {return {id:id,eligible:removalAllowed,bytesKnown:true,bytes:4096,fileCount:1,partial:false,token:removalAllowed?"fixture-"+removalGeneration+":"+id:"",reason:removalAllowed?"Synthetic idle verified; reviewed files only":"Runtime idle is unknown in this synthetic fixture"};}
         function cleanupPlan(id) {var c=removalPlan(9);c.title="Synthetic Arcade";c.system="SNES";c.cover="";return {candidates:[c]};}
-        function removeDownload(id, token) {if(token === "fixture-"+removalGeneration+":"+id)called="remove:"+id;else message="Synthetic stale preview refused";}
+        function removeDownload(id, token) {if(token === "fixture-"+removalGeneration+":"+id){called="remove:"+id;message="Synthetic reviewed download removed";}else message="Synthetic stale preview refused";}
     }
     QtObject {
         id:syntheticPc
@@ -168,7 +168,7 @@
             var previousPins=ui.pins,previousOpened=ui.cloudOpened,hadOpened=window.api.memory.has("cloudOpened");
             var previousStored=hadOpened?window.api.memory.get("cloudOpened"):null,previousReadable=ui.cloudHistoryReadable;
             var previousReturn=ui.cloudReturnOverlay,previousPanel=ui.cloudReturnPanel;
-            var recorder=Qt.createQmlObject('import QtQuick 2.15; QtObject { property int stages:0; property int writes:0; property string edition:""; function read(q){return {};} function act(a){writes++;return {ok:false};} function recordRomLaunch(id,title,system){stages++;edition=id;} }',window);
+            var recorder=Qt.createQmlObject('import QtQuick 2.15; QtObject { property int stages:0; property int writes:0; property string edition:""; function read(q){return {};} function act(a){writes++;return {ok:false};} function beginRomLaunch(id,title,system){stages++;edition=id;return "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";} function cancelRomLaunch(token){return true;} }',window);
             window.deviceLibrary=recorder;
             var g=cloudFixture(false,ui.rawEntries[0].art);
             syntheticCloud.catalogueVersion=1;syntheticCloud.games=[g];window.romCloud=syntheticCloud;
@@ -458,7 +458,7 @@
                 ui.rawEntries=originals.concat([{systemId:"androidapps",capacity:{id:"internal-data",total:100,used:90,free:5,observedAt:"2026-10-14T08:00:00Z",source:"Synthetic df"}}]);
                 ui.openPanel("storage",0);
                 require(ui.overlay === "storage", "Storage did not open");
-                require(ui.storageRows()[0].label === "Known ROM files", "Storage ROM summary missing");
+                require(ui.storageRows()[0].volume && ui.storageRows().some(function(row){return row.label === "ROM inventory · all locations";}), "Storage volume or separate ROM summary missing");
                 ui.rawEntries=originals; ui.overlay="details";
                 key(ui,Qt.Key_Escape);
                 require(ui.overlay === "", "Escape did not close details");
@@ -666,9 +666,13 @@
                 require(findItem(cloudUi,"cloudNotice").text.indexOf("Press Start to confirm; Select keeps it")!==-1,"confirmation keeps fixed key labels");
                 keyMap.accept=[{name:function(){return "Enter";}}];keyMap.cancel=[{name:function(){return "Esc";}}];
                 keyMap.details=[{name:function(){return "X";}}];keyMap.filters=[{name:function(){return "Y";}}];
+                syntheticCloud.called="";cloudUi.handleKey({key:Qt.Key_Return,isAutoRepeat:true,accepted:false});
+                require(cloudUi.confirmRemove && syntheticCloud.called==="","held review button confirmed removal");
                 syntheticCloud.removalGeneration++;syntheticCloud.called="";
                 key(ui,Qt.Key_Return);require(syntheticCloud.called === "","stale preview reached removal");
+                require(findItem(cloudUi,"cloudNotice").text.indexOf("Synthetic stale preview refused")!==-1,"native stale-preview refusal hidden");
                 key(ui,Qt.Key_Y);syntheticCloud.games=JSON.parse(JSON.stringify(syntheticCloud.games));key(ui,Qt.Key_Return);require(syntheticCloud.called === "remove:1", "explicit cloud remove failed");
+                require(findItem(cloudUi,"cloudNotice").text.indexOf("Synthetic reviewed download removed")!==-1,"explicit removal result hidden");
                 key(ui,Qt.Key_Return);require(syntheticCloud.called === "play:1", "offline cloud play did not reach bridge");
                 syntheticCloud.busy=true;key(ui,Qt.Key_X);require(syntheticCloud.called === "cancel", "pause download failed");
                 key(ui,Qt.Key_Escape);window.romCloud=null;

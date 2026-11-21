@@ -30,7 +30,7 @@ MAX_HYPOTHESES = 8
 METHODS = {'physical', 'owner', 'observed', 'injected', 'log', 'test'}
 STAGES = {'unknown', 'catalogue', 'preflight', 'download', 'activation', 'boot',
           'menus', 'gameplay', 'physical-controls', 'audio', 'save-restore',
-          'exit-return', 'sustained', 'native-4-3', 'stretch-only'}
+          'exit-return', 'sustained', 'native-4-3', 'stretch-only', 'offline-launch'}
 FACTS = {
     'route-unavailable': ({'catalogue', 'boot'}, 'No usable launch route was reported.',
                           'Review the configured route without changing saves or starting another runtime.'),
@@ -63,6 +63,32 @@ FACTS = {
     'result-unknown': (STAGES, 'The operation result was not established.',
                        'Keep the result unknown. Do not infer success or repeat a save-affecting action blindly.'),
 }
+FACTS.update({
+    'copy-directory-owner-check-failed': ({'preflight'}, "The copied-save folder did not pass the reader's owner-only permissions check.",
+        'Review the observed file-access check without granting new permissions or changing saves automatically.'),
+    'copy-index-owner-check-failed': ({'preflight'}, "The copied-save index did not pass the reader's owner-only permissions check.",
+        'Review the observed file-access check without granting new permissions or changing saves automatically.'),
+    'copy-history-unavailable': ({'preflight'}, 'The copied-save history reader reported unavailable.',
+        'Keep the copied history and current progress. Review the reader result without restoring or resetting saves.'),
+    'copy-history-changed': ({'preflight'}, 'The copied-save history changed before the requested check completed.',
+        'Reopen copied history before checking again. Keep all current copies and progress.'),
+    'copy-archive-unverified': ({'preflight'}, 'The requested copied-save archive could not be verified.',
+        'Keep the archive and current progress. This result does not authorize loading or replacing a save.'),
+})
+FACTS.update({
+    'download-file-unverified': ({'preflight'}, 'A downloaded file could not pass the native identity check before opening.',
+        'Keep the downloaded files and saves. Review the local copy before trying to open it again.'),
+    'download-changed-before-open': ({'preflight'}, 'The downloaded file record or payload changed during the native opening check.',
+        'Keep all current files and progress. Review the changed download before a fresh deliberate attempt.'),
+    'download-checksum-unverified': ({'preflight'}, 'A downloaded file did not pass its expected checksum before opening.',
+        'Keep the download and current saves. Do not open or replace a save on the strength of this failed check.'),
+    'runtime-request-refused': ({'preflight'}, 'The platform launch adapter did not accept the verified-file request.',
+        'Review the supported runtime and core installation. This refusal does not establish its cause or authorize a new installation.'),
+})
+FACTS['selected-theme-load-failed'] = ({'preflight'}, 'The native launcher could not load the selected theme.',
+    'Keep the selected theme and current progress. Review the failure or deliberately choose the built-in theme; no cause or repair is established.')
+FACTS['selected-theme-construction-failed'] = ({'preflight'}, 'The selected theme failed while creating its interface.',
+    'Keep the selected theme and current progress. Review the failure or deliberately choose the built-in theme; no cause or repair is established.')
 HYPOTHESES = {
     'setup-changed': 'The active setup may differ from the observed setup.',
     'temporary-network-failure': 'A temporary network failure may have contributed.',
@@ -77,6 +103,19 @@ REQUIRED = {'schemaVersion', 'editionId', 'observedRecipeId', 'activeRecipeId',
 DISCARDED = {'logs', 'rawLog', 'token', 'tokens', 'account', 'accountId', 'path',
              'paths', 'rom', 'save', 'payload', 'config', 'endpoint', 'url',
              'device', 'runtime', 'attachments'}
+CONTEXT_FIELDS = {'editionId', 'recipeId', 'sourceSha256', 'buildSha256',
+                  'runtimeId', 'runtimeVersion'}
+COLLECTION_STATUSES = {'supplied', 'collected', 'unsupported', 'refused', 'unavailable'}
+COLLECTION_METHODS = {'operator', 'adapter', 'synthetic'}
+THEME_ERROR_CODES = {'required-property-uninitialized', 'qml-syntax-error', 'qml-type-unavailable',
+                     'javascript-type-error', 'javascript-reference-error', 'qml-error-unclassified'}
+LOCAL_EVIDENCE_LIMITS = ('Only bounded error categories/positions and fixed configuration facts. '
+                       'No raw log/config text, paths, attachments, ROMs, saves, credentials or commands. '
+                       'No repair or send was performed.')
+
+APP_DATA_EVIDENCE_LIMITS = ('Only bounded error categories/positions, fixed configuration facts and app-data volume capacity. '
+                            'No raw log/config text, paths, attachments, ROMs, saves, credentials or commands. '
+                            'No repair or send was performed.')
 
 
 class BundleError(ValueError):
@@ -88,29 +127,149 @@ def require(condition, message):
         raise BundleError(message)
 
 
-def identifier(value):
-    require(isinstance(value, str) and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}', value)
+def identifier(value, *, version=False, edition=False):
+    pattern = (r'[A-Za-z0-9][A-Za-z0-9.+_-]{0,79}' if version else
+               r'[A-Za-z0-9][A-Za-z0-9._:-]{0,511}' if edition else
+               r'[A-Za-z0-9][A-Za-z0-9._:-]{0,127}')
+    require(isinstance(value, str) and re.fullmatch(pattern, value)
             and not findings('failure-identity', value), 'Invalid or sensitive identity')
     # Identity is useful locally but never copied verbatim into this bundle.
     return hashlib.sha256(value.encode('utf-8')).hexdigest()
 
 
+def timestamp(value, now):
+    require(isinstance(value, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', value),
+            'Invalid observation date')
+    try:
+        date = dt.datetime.strptime(value, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=dt.timezone.utc)
+    except ValueError:
+        raise BundleError('Invalid observation date') from None
+    require(date <= now, 'Observation date is in the future')
+    return date
+
+
+def context(raw):
+    require(isinstance(raw, dict) and set(raw) == CONTEXT_FIELDS, 'Invalid provenance context')
+    out = {'editionSha256': identifier(raw['editionId'], edition=True), 'recipeSha256': identifier(raw['recipeId'])}
+    for field in ('sourceSha256', 'buildSha256'):
+        value = raw[field]
+        require(value is None or (isinstance(value, str) and re.fullmatch(r'[0-9a-f]{64}', value)),
+                'Invalid provenance digest')
+        out[field] = value
+    for field in ('runtimeId', 'runtimeVersion'):
+        value = raw[field]
+        require(value is None or isinstance(value, str) and value.casefold() not in
+                {'unknown', 'unverified', 'unspecified', 'pending', 'none', 'null', 'latest', 'current'},
+                'Use null for unknown runtime provenance')
+        out[field + 'Sha256'] = None if value is None else identifier(value, version=field == 'runtimeVersion')
+    return out
+
+
+def provenance(raw, edition, observed_recipe, active_recipe, observed_date, now):
+    require(isinstance(raw, dict) and set(raw) == {'observed', 'active', 'collection'},
+            'Invalid provenance fields')
+    observed = context(raw['observed'])
+    active = None if raw['active'] is None else context(raw['active'])
+    require(observed['editionSha256'] == edition and observed['recipeSha256'] == observed_recipe,
+            'Observation provenance does not match descriptor')
+    require((active is None and active_recipe is None) or
+            (active is not None and active['recipeSha256'] == active_recipe),
+            'Active provenance does not match descriptor')
+    collection = raw['collection']
+    require(isinstance(collection, dict) and set(collection) == {'status', 'method', 'collectedAt'},
+            'Invalid collection provenance')
+    require(isinstance(collection['status'], str) and collection['status'] in COLLECTION_STATUSES
+            and isinstance(collection['method'], str) and collection['method'] in COLLECTION_METHODS,
+            'Unsupported collection provenance')
+    require(timestamp(collection['collectedAt'], now) >= observed_date,
+            'Collection predates observation')
+    # A known mismatch stays visible even when other context fields are unknown.
+    mismatch = active is not None and any(observed[k] is not None and active[k] is not None
+                                          and observed[k] != active[k] for k in observed)
+    complete = active is not None and all(v is not None for v in observed.values()) \
+        and all(v is not None for v in active.values())
+    scope = ('unlinked' if active is None else 'historical-context' if mismatch
+             else 'same-declared-context' if complete else 'unknown-context')
+    return {'observed': observed, 'active': active, 'contextScope': scope,
+            'collection': dict(collection), 'authenticated': False}
+
+
+def local_evidence(raw, fact_codes, observed_date, now):
+    require(isinstance(raw, dict) and {'configuration', 'errorLog', 'lastCloudPreflight'} <= set(raw)
+            and set(raw) <= {'configuration', 'errorLog', 'lastCloudPreflight', 'appDataStorage'},
+            'Invalid local evidence fields')
+    config = raw['configuration']
+    require(isinstance(config, dict) and set(config) ==
+            {'framework', 'frameworkVersion', 'selectionKind', 'loaderStatus', 'failureStage'},
+            'Invalid configuration facts')
+    require(config['framework'] == 'Qt' and isinstance(config['frameworkVersion'], str)
+            and re.fullmatch(r'[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}', config['frameworkVersion'])
+            and config['selectionKind'] in ('local-file', 'bundled', 'other')
+            and config['loaderStatus'] == 'error', 'Invalid configuration values')
+    expected = 'interface-creation' if 'selected-theme-construction-failed' in fact_codes else 'theme-load'
+    require(config['failureStage'] == expected, 'Configuration stage differs from retained fact')
+    log = raw['errorLog']
+    require(isinstance(log, dict) and set(log) == {'status', 'maxEntries', 'truncated', 'entries'}
+            and type(log['maxEntries']) is int and log['maxEntries'] == 8
+            and type(log['truncated']) is bool and isinstance(log['entries'], list)
+            and len(log['entries']) <= 8, 'Invalid bounded error log')
+    require(log['status'] == ('collected' if log['entries'] else 'unavailable')
+            and (not log['truncated'] or len(log['entries']) == 8), 'Invalid error collection state')
+    entries = []
+    for entry in log['entries']:
+        require(isinstance(entry, dict) and set(entry) == {'code', 'line', 'column'}
+                and isinstance(entry['code'], str) and entry['code'] in THEME_ERROR_CODES
+                and type(entry['line']) is int and 0 <= entry['line'] <= 1000000
+                and type(entry['column']) is int and 0 <= entry['column'] <= 10000
+                and entry not in entries, 'Invalid typed error entry')
+        entries.append(dict(entry))
+    last = raw['lastCloudPreflight']
+    require(isinstance(last, dict), 'Invalid previous Cloud preflight')
+    if last.get('status') == 'unavailable':
+        require(set(last) == {'status'}, 'Unavailable result has extra fields')
+    else:
+        require(set(last) == {'status', 'code', 'editionSha256', 'observedAt'}
+                and last['status'] == 'observed-refusal'
+                and last['code'] in ('download-file-unverified', 'download-changed-before-open',
+                                     'download-checksum-unverified', 'runtime-request-refused')
+                and isinstance(last['editionSha256'], str)
+                and re.fullmatch(r'[0-9a-f]{64}', last['editionSha256']), 'Invalid previous refusal')
+        require(timestamp(last['observedAt'], now) <= observed_date, 'Previous refusal postdates failure')
+    result = {'configuration': dict(config), 'errorLog': dict(log, entries=entries),
+              'lastCloudPreflight': dict(last)}
+    if 'appDataStorage' in raw:
+        storage = raw['appDataStorage']
+        require(isinstance(storage, dict), 'Invalid app-data capacity')
+        if storage.get('status') == 'unavailable':
+            require(set(storage) == {'status'}, 'Unavailable capacity has extra fields')
+        else:
+            require(set(storage) == {'status', 'scope', 'method', 'totalBytes', 'availableBytes', 'observedAt'}
+                    and storage['status'] == 'measured' and storage['scope'] == 'app-data-volume'
+                    and storage['method'] == 'fstatvfs'
+                    and type(storage['totalBytes']) is int and 0 < storage['totalBytes'] <= 2**53 - 1
+                    and type(storage['availableBytes']) is int and 0 <= storage['availableBytes'] <= storage['totalBytes'],
+                    'Invalid app-data capacity values')
+            require(timestamp(storage['observedAt'], now) <= observed_date, 'Capacity postdates failure')
+        result['appDataStorage'] = dict(storage)
+    return result
+
+
 def build(raw, *, now=None):
     """Return an allowlisted private report; input claims are never authenticated."""
-    require(isinstance(raw, dict) and REQUIRED <= set(raw) and set(raw) <= REQUIRED | DISCARDED,
+    require(isinstance(raw, dict), 'Missing or unexpected descriptor fields')
+    version = raw.get('schemaVersion')
+    require(type(version) is int and version in (1, 2), 'Unsupported descriptor schema')
+    required = REQUIRED | ({'provenance'} if version == 2 else set())
+    require(required <= set(raw) and set(raw) <= required | DISCARDED | ({'origin', 'localEvidence'} if version == 2 else set()),
             'Missing or unexpected descriptor fields')
-    require(type(raw['schemaVersion']) is int and raw['schemaVersion'] == 1, 'Unsupported descriptor schema')
-    edition = identifier(raw['editionId'])
+    now = now or dt.datetime.now(dt.timezone.utc)
+    edition = identifier(raw['editionId'], edition=version == 2)
     observed = identifier(raw['observedRecipeId'])
     active = None if raw['activeRecipeId'] is None else identifier(raw['activeRecipeId'])
     stamp = raw['observedAt']
-    require(isinstance(stamp, str) and re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', stamp),
-            'Invalid observation date')
-    try:
-        date = dt.datetime.strptime(stamp, '%Y-%m-%dT%H:%M:%SZ').replace(tzinfo=dt.timezone.utc)
-    except ValueError:
-        raise BundleError('Invalid observation date') from None
-    require(date <= (now or dt.datetime.now(dt.timezone.utc)), 'Observation date is in the future')
+    date = timestamp(stamp, now)
+    require(raw.get('origin', 'operator') in ('operator', 'native-save-copies', 'native-cloud-play', 'native-theme-load'), 'Unsupported observation origin')
+    captured = provenance(raw['provenance'], edition, observed, active, date, now) if version == 2 else None
     stage = raw['stage']
     require(isinstance(stage, str) and stage in STAGES, 'Invalid failure stage')
     facts = raw['facts']
@@ -145,13 +304,26 @@ def build(raw, *, now=None):
     scope = 'unlinked' if active is None else 'same-declared-recipe' if active == observed else 'historical-recipe'
     if scope != 'same-declared-recipe':
         hints.insert(0, 'This observation does not establish the current setup. Compare its declared recipe before applying any guidance.')
-    return {'schemaVersion': 1, 'kind': 'nova-structured-failure', 'observedAt': stamp,
+    if captured is not None and captured['contextScope'] != 'same-declared-context':
+        hints.insert(0, 'The declared edition, source, build or runtime context is changed or incomplete. This retained observation does not establish the current context.')
+    if captured is not None and captured['collection']['status'] != 'collected':
+        hints.insert(0, 'This capture did not collect evidence. Retained facts remain supplied observations; collection status does not establish a cause or a successful check.')
+    result = {'schemaVersion': version, 'kind': 'nova-structured-failure', 'observedAt': stamp,
             'editionSha256': edition, 'observedRecipeSha256': observed, 'activeRecipeSha256': active,
             'recipeScope': scope, 'currentSetupVerified': False, 'stage': stage,
-            'source': 'operator-supplied-structured-observation', 'facts': out_facts,
+            'source': {'native-save-copies': 'native-save-copies-observation', 'native-cloud-play': 'native-cloud-play-observation', 'native-theme-load': 'native-theme-load-observation'}.get(raw.get('origin'), 'operator-supplied-structured-observation'), 'facts': out_facts,
             'hypotheses': out_hypotheses, 'recoveryHints': hints,
             'discardedFieldCount': len(set(raw) & DISCARDED),
             'limits': 'No raw logs, attachments, config, ROMs, saves, credentials or commands. No repair or send was performed.'}
+    if captured is not None:
+        result['provenance'] = captured
+    if 'localEvidence' in raw:
+        require(raw.get('origin') == 'native-theme-load' and stage == 'preflight'
+                and codes <= {'selected-theme-load-failed', 'selected-theme-construction-failed'}
+                and len(codes) == 1, 'Local evidence requires one native theme failure')
+        result['localEvidence'] = local_evidence(raw['localEvidence'], codes, date, now)
+        result['limits'] = APP_DATA_EVIDENCE_LIMITS if 'appDataStorage' in raw['localEvidence'] else LOCAL_EVIDENCE_LIMITS
+    return result
 
 
 def preview(raw, *, now=None):

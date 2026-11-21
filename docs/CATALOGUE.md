@@ -28,7 +28,7 @@ Do not mark a route ready merely because a server lists a copy. Validate the loc
 
 Optional storage evidence: `x-size-bytes` contains nonnegative observed ROM-file bytes; absence means unknown. `x-size-observed-at` contains an ISO8601 capture timestamp. `x-catalogue-generated-at` is the separate export timestamp. These do not establish current disk usage, free space or emulator readiness. Android utilities are excluded from the storage view; entries without size remain counted as unknown.
 
-Optional multi-disc presentation: `x-disc-set-id`, `x-disc-set-name` and a positive integer `x-disc-number` group two or more uniquely numbered members of the same explicit set, system and set name. Similar titles alone never group. Browse views show one game; A opens a disc picker using the latest local launch history, otherwise the lowest disc number. Progress, favourites, IDs, routes and file bytes remain edition scoped. Changing discs during an active game uses the emulator.
+Optional multi-disc presentation: `x-disc-set-id`, `x-disc-set-name` and a positive integer `x-disc-number` group two or more uniquely numbered members of the same explicit set, system and set name. Similar titles alone never group. Browse views show one game; A opens a disc picker using the latest local launch history, otherwise the lowest disc number. Progress, favourites, IDs, routes and file bytes remain edition scoped. Changing discs during an active game uses the emulator. The picker offers mapped Details/X → Swap help, a read-only route-scoped guide that returns to the same selected disc and parent surface. It never treats an explicit set or a matching title as proof of an active complete playlist; see [disc continuity](DISC-CONTINUITY.md).
 
 Optional app identity: `x-app-package` identifies an Android app entry. The Apps view uses `androidapps` entries. An unavailable Steam edition may offer a separate action to open the configured DroidDeck app; this action does not configure the game route or start an install.
 
@@ -43,6 +43,10 @@ Home leads with valid local launch history, followed by separately labelled hand
 Home is a game shelf: Android apps and emulator utilities are excluded from recent, favourite and fallback Home selections. Their entries remain available in Apps or Library.
 
 Per-device installation and filesystem-capacity fields are specified in [Installation observations](installation-observations.md). They retain scan dates and do not promote launch routes.
+
+Exporter-side [cover repairs](ARTWORK-REPAIRS.md) retain exact edition identity,
+image checksum and source citation across refreshes. The helper changes only
+artwork fields; it does not configure routes, installation or progress.
 
 An optional `romCloud` bridge with `catalogueVersion: 1` adds native-minted cloud editions to this same browsing model. Server origin and exact content identity distinguish them from Pegasus entries with the same title. A server listing alone never enables Play. Installed copies use the local ownership marker, and a changed remote copy cannot relabel that installed identity. Cloud openings are versioned local history, not recorded minutes or service progress. Until the progress service registers those identities, cloud favourites stay local and service status/collection edits stay unavailable. See [the Cloud client contract](../native/romcloud/README.md).
 

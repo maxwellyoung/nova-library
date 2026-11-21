@@ -127,6 +127,131 @@ class SaveCatalogue(unittest.TestCase):
         self.store.apply(plan)
         self.store.reference(other_id)
 
+    def test_reviewed_anchor_edit_preserves_exact_archive_thumbnail_and_provenance(self):
+        image = self.base / 'preview.png'
+        image.write_bytes(png())
+        archive = self.archive(b'original state')
+        reference = self.store.import_passport(archive, thumbnail_path=image)
+        identifier = reference['checkpointId']
+        before = self.store.list_entries()
+        plan = self.store.plan_rename(identifier, 'Before Mantis', pinned=True)
+        self.assertEqual(self.store.list_entries(), before)
+        self.assertEqual(plan['identity'], reference['identity'])
+        self.assertEqual(plan['passportSha256'], reference['passportSha256'])
+        self.assertEqual(plan['before'], {'name': '', 'pinned': False})
+        self.assertEqual(plan['after'], {'name': 'Before Mantis', 'pinned': True})
+        self.assertEqual(self.store.apply(json.loads(json.dumps(plan))), [identifier])
+        self.reopen()
+        self.assertEqual(self.store.reference(identifier), reference)
+        self.assertEqual(self.store.thumbnail(identifier), png())
+        anchor = self.store.list_entries()[0]
+        self.assertEqual(anchor, {**before[0], 'name': 'Before Mantis', 'pinned': True})
+        self.store.export_passport(identifier, self.base / 'after-edit.nvs')
+        self.assertEqual((self.base / 'after-edit.nvs').read_bytes(), archive.read_bytes())
+        self.add(b'quick 1')
+        self.add(b'quick 2')
+        self.store.apply(self.store.plan_rotation(self.target))
+        self.add(b'quick 3')
+        self.assertEqual(self.store.reference(identifier), reference)
+        with self.assertRaisesRegex(ValueError, 'Protected anchors'):
+            self.store.plan_delete([identifier])
+
+    def test_metadata_preview_rejects_other_writer_and_aba_changes_without_losing_protection(self):
+        identifier = self.add(name='Protected original', pinned=True)
+        original = self.store.reference(identifier)
+        plan = self.store.plan_rename(identifier, 'Stale unpin', pinned=False)
+        other = catalogue.Catalogue(self.root, clock=lambda: self.now)
+        try:
+            other.rename(identifier, 'Changed by another caller', pinned=True)
+            other.rename(identifier, 'Protected original', pinned=True)
+            before = self.store.list_entries()
+            with self.assertRaisesRegex(ValueError, 'Metadata preview changed'):
+                self.store.apply(plan)
+            self.assertEqual(self.store.list_entries(), before)
+            self.assertEqual(self.store.reference(identifier), original)
+            self.assertTrue(before[0]['pinned'])
+        finally:
+            other.close()
+
+    def test_metadata_edit_invalidates_retention_and_other_import_invalidates_edit(self):
+        identifier = self.add()
+        deletion = self.store.plan_delete([identifier])
+        self.store.apply(self.store.plan_rename(identifier, 'Keep this', pinned=True))
+        with self.assertRaises(ValueError):
+            self.store.apply(deletion)
+        plan = self.store.plan_rename(identifier, 'Reviewed unpin', pinned=False)
+        self.add(b'other branch')
+        before = self.store.list_entries(include_trash=True)
+        with self.assertRaisesRegex(ValueError, 'Metadata preview changed'):
+            self.store.apply(plan)
+        self.assertEqual(self.store.list_entries(include_trash=True), before)
+
+    def test_malformed_tampered_and_foreign_metadata_previews_keep_original_anchor(self):
+        identifier = self.add(name='Anchor', pinned=True)
+        plan = self.store.plan_rename(identifier, 'New label', pinned=True)
+        before = self.store.list_entries(include_trash=True)
+        patches = [{'schemaVersion': True}, {'generation': False}, {'checkpointId': {}},
+                   {'before': {'name': 'Anchor', 'pinned': 1}},
+                   {'after': {'name': 'New label', 'pinned': 1}}, {'after': {}},
+                   {'after': {'name': '', 'pinned': True}},
+                   {'identity': {**self.target, 'kind': 'emulator-state'}},
+                   {'passportSha256': '0' * 64}, {'token': '0' * 64},
+                   {'after': {'name': 'Unreviewed edit', 'pinned': False}}, {'extra': True}]
+        for patch in patches:
+            with self.subTest(patch=patch), self.assertRaises(ValueError):
+                self.store.apply({**copy.deepcopy(plan), **patch})
+            self.assertEqual(self.store.list_entries(include_trash=True), before)
+        other = catalogue.Catalogue(self.base / 'foreign-history', create=True)
+        try:
+            with self.assertRaises(ValueError):
+                other.apply(plan)
+            self.assertEqual(other.list_entries(), [])
+        finally:
+            other.close()
+        self.store.reference(identifier)
+
+    def test_reviewed_unpin_refuses_full_slots_and_trashed_or_corrupt_archives(self):
+        anchor = self.add(name='Anchor', pinned=True)
+        quick = self.add(b'quick 1')
+        plan = self.store.plan_rename(anchor, 'Anchor', pinned=False)
+        self.add(b'quick 2')
+        before = self.store.list_entries()
+        with self.assertRaisesRegex(ValueError, 'overflow quick-save slots'):
+            self.store.apply(plan)
+        self.assertEqual(self.store.list_entries(), before)
+        plan = self.store.plan_rename(quick, 'Protect quick', pinned=True)
+        self.store.apply(self.store.plan_delete([quick]))
+        with self.assertRaisesRegex(ValueError, 'in trash'):
+            self.store.apply(plan)
+        with self.assertRaisesRegex(ValueError, 'in trash'):
+            self.store.plan_rename(quick, 'Protect quick', pinned=True)
+        plan = self.store.plan_rename(anchor, 'Renamed anchor', pinned=True)
+        rowid = self.store.db.execute('SELECT sequence FROM records WHERE id=?', (anchor,)).fetchone()[0]
+        with self.store.db.blobopen('records', 'archive', rowid) as blob:
+            blob.write(b'corruption')
+        self.store.db.commit()
+        before = self.store.list_entries(include_trash=True)
+        for operation in (lambda: self.store.apply(plan),
+                          lambda: self.store.plan_rename(anchor, 'Other label', pinned=True)):
+            with self.assertRaisesRegex(ValueError, 'Stored passport checksum failed'):
+                operation()
+            self.assertEqual(self.store.list_entries(include_trash=True), before)
+
+    def test_metadata_commit_failure_rolls_back_unpin_and_keeps_original_bytes(self):
+        identifier = self.add(b'protected original bytes', name='Protected original', pinned=True)
+        reference = self.store.reference(identifier)
+        before = self.store.list_entries()
+        plan = self.store.plan_rename(identifier, 'Unpinned label', pinned=False)
+        with mock.patch.object(self.store, '_commit', side_effect=sqlite3.OperationalError('synthetic disk failure')):
+            with self.assertRaisesRegex(ValueError, 'prior history is retained'):
+                self.store.apply(plan)
+        self.reopen()
+        self.assertEqual(self.store.list_entries(), before)
+        self.assertEqual(self.store.reference(identifier), reference)
+        # Failed commits do not consume the generation or the still-current preview.
+        self.store.apply(plan)
+        self.assertFalse(self.store.list_entries()[0]['pinned'])
+
     def test_delete_undo_and_existing_restore_output_preserve_both_branches(self):
         a = self.add(b'branch A')
         b = self.add(b'branch B')
@@ -320,21 +445,29 @@ class SaveCatalogue(unittest.TestCase):
                 self.store.import_passport(archive)
         self.assertEqual([r['checkpointId'] for r in self.store.list_entries()], [identifier])
 
-    def test_process_exit_before_commit_recovers_capture_delete_and_purge(self):
+    def test_process_exit_before_commit_recovers_capture_metadata_delete_and_purge(self):
         a = self.add(b'original branch')
         archive = self.archive(b'interrupted import')
-        scripts = ["c.import_passport(Path(sys.argv[2]))", "c.apply(c.plan_delete([sys.argv[2]]))",
-                   "c.apply(c.plan_purge([sys.argv[2]]))"]
-        for index, operation in enumerate(scripts):
-            if index == 2:
+        scripts = [("", "c.import_passport(Path(sys.argv[2]))"),
+                   ("plan=c.plan_rename(sys.argv[2],'Interrupted anchor',pinned=True)", "c.apply(plan)"),
+                   ("plan=c.plan_delete([sys.argv[2]])", "c.apply(plan)"),
+                   ("plan=c.plan_purge([sys.argv[2]])", "c.apply(plan)")]
+        for index, (prepare, operation) in enumerate(scripts):
+            if index == 3:
                 self.store.apply(self.store.plan_delete([a]))
             before = self.store.list_entries(include_trash=True)
             self.store.close()
-            script = (f'import sys,os;from pathlib import Path;sys.path.insert(0,{str(TOOLS)!r});'
-                      'from save_catalogue import Catalogue;c=Catalogue(Path(sys.argv[1]));'
-                      'c._commit=lambda:os._exit(77);' + operation)
+            script = (f'import sys,os\nfrom pathlib import Path\nsys.path.insert(0,{str(TOOLS)!r})\n'
+                      'from save_catalogue import Catalogue\nc=Catalogue(Path(sys.argv[1]))\n'
+                      + prepare + '\nprevious_generation=c._meta("generation")\n'
+                      'def interrupt_write_commit():\n'
+                      '    assert c._meta("generation")==previous_generation+1, "not a write transaction"\n'
+                      '    print("write transaction reached", flush=True)\n'
+                      '    os._exit(77)\n'
+                      'c._commit=interrupt_write_commit\n' + operation)
             result = subprocess.run([sys.executable, '-c', script, str(self.root), str(archive) if index == 0 else a], capture_output=True)
             self.assertEqual(result.returncode, 77, result.stderr)
+            self.assertEqual(result.stdout, b'write transaction reached\n')
             self.store = catalogue.Catalogue(self.root, clock=lambda: self.now)
             self.assertEqual(self.store.list_entries(include_trash=True), before)
         self.store.undo(a)

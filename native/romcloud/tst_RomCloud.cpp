@@ -11,6 +11,7 @@
 #include <QDirIterator>
 #ifdef Q_OS_UNIX
 #include <unistd.h>
+#include <sys/stat.h>
 #endif
 using namespace library;
 class Tests : public QObject {
@@ -33,6 +34,154 @@ class Tests : public QObject {
         return c;
     }
 private slots:
+    void reviewInspectionNeverStartsPayloads_data() {
+        QTest::addColumn<QString>("kind");
+        for(const auto& kind:{"success","wrong-id","http-failure","cancel"})QTest::newRow(kind)<<QString(kind);
+    }
+    void reviewInspectionNeverStartsPayloads() {
+        QFETCH(QString,kind);QTemporaryDir dir;QTcpServer server;QVERIFY(server.listen(QHostAddress::LocalHost));
+        const auto root=QDir(dir.path()).canonicalPath()+"/roms";
+        RomCloudConfig c{QUrl("http://127.0.0.1:"+QString::number(server.serverPort())),"synthetic-token",root,dir.path()+"/cache"};
+        QVERIFY(QDir().mkpath(c.cache));auto summary=game();summary.remove("files");
+        QFile cache(c.cache+"/catalogue.json");QVERIFY(cache.open(QIODevice::WriteOnly));
+        cache.write(QJsonDocument::fromVariant(QVariantMap{{"endpoint",c.endpoint.toString()},{"games",QVariantList{RomCloud::validateGame(summary)}}}).toJson());cache.close();
+        int metadataRequests=0,payloadRequests=0;
+        connect(&server,&QTcpServer::newConnection,this,[&]{auto socket=server.nextPendingConnection();auto buffer=new QByteArray;
+            connect(socket,&QObject::destroyed,this,[buffer]{delete buffer;});
+            connect(socket,&QTcpSocket::readyRead,socket,[&,socket,buffer]{buffer->append(socket->readAll());if(!buffer->contains("\r\n\r\n"))return;
+                socket->disconnect(socket,nullptr,socket,nullptr);
+                const bool metadata=buffer->startsWith("GET /api/roms/1 ");
+                if(metadata)++metadataRequests;else ++payloadRequests;
+                if(kind=="cancel")return;
+                const auto body=metadata?QJsonDocument::fromVariant(game(kind=="wrong-id"?2:1)).toJson():payload;
+                socket->write((kind=="http-failure"?QByteArray("HTTP/1.1 503 Unavailable\r\n"):QByteArray("HTTP/1.1 200 OK\r\n"))+"Content-Length: "+QByteArray::number(body.size())+"\r\nConnection: close\r\n\r\n"+body);socket->disconnectFromHost();
+            });connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
+        });
+        RomCloud cloud(c);QCOMPARE(cloud.reviewVersion(),1);QVERIFY(!cloud.downloadReview(1)["detailsKnown"].toBool());
+        cloud.inspectDownload(1);QVERIFY(cloud.inspectingDownload());QVERIFY(cloud.games()[0].toMap()["downloadState"]!="downloading");QTRY_COMPARE_WITH_TIMEOUT(metadataRequests,1,3000);
+        if(kind=="cancel")cloud.cancel();
+        QTRY_VERIFY_WITH_TIMEOUT(!cloud.busy(),3000);
+        QVERIFY(!cloud.inspectingDownload());
+        QCOMPARE(payloadRequests,0);QVERIFY(!QFileInfo::exists(root));QVERIFY(cloud.downloads().isEmpty());
+        QCOMPARE(cloud.downloadReview(1)["detailsKnown"].toBool(),kind=="success");
+        if(kind=="success") {
+            {RomCloud reopened(c);QVERIFY(reopened.downloadReview(1)["detailsKnown"].toBool());reopened.inspectDownload(1);QVERIFY(!reopened.busy());QCOMPARE(metadataRequests,1);}
+            QVERIFY(QDir().mkpath(root));cloud.install(1);QTRY_VERIFY_WITH_TIMEOUT(!cloud.busy(),3000);
+            QCOMPARE(payloadRequests,1);QVERIFY(cloud.games()[0].toMap()["installed"].toBool());
+            server.close();RomCloud offline(c);QSignalSpy launch(&offline,&RomCloud::launchRequested);
+            offline.play(1);QTRY_VERIFY_WITH_TIMEOUT(!offline.busy(),3000);QCOMPARE(launch.count(),1);
+        }
+    }
+    void reviewPreservesDependenciesIdentityAndPrivacy() {
+        QTemporaryDir dir;auto c=removalFixture(dir,true);RomCloud cloud(c);
+        const auto review=cloud.downloadReview(1);QVERIFY(review["detailsKnown"].toBool());
+        QCOMPARE(review["files"].toList().size(),1);QCOMPARE(review["remainingBytes"].toLongLong(),qint64(payload.size()-123));
+        QVERIFY(review["scope"].toString().contains("smaller selection is not supported"));
+        QCOMPARE(review["editionId"].toString(),cloud.games()[0].toMap()["editionId"].toString());
+        const auto bytes=QJsonDocument::fromVariant(review).toJson();
+        QVERIFY(!bytes.contains(c.token));QVERIFY(!bytes.contains(c.endpoint.toString().toUtf8()));QVERIFY(!bytes.contains(c.root.toUtf8()));
+        QVERIFY(cloud.downloadReview(999).isEmpty());cloud.inspectDownload(999);QVERIFY(!cloud.busy());
+        auto item=game(2,"disc-1.chd","ps"),second=game(2,"disc-2.chd","ps")["files"].toList()[0].toMap();second["id"]=4;
+        auto playlist=game(2,"set.m3u","ps")["files"].toList()[0].toMap();playlist["id"]=5;
+        item["files"]=QVariantList{item["files"].toList()[0],second,playlist};
+        QFile cache(c.cache+"/catalogue.json");QVERIFY(cache.open(QIODevice::WriteOnly|QIODevice::Truncate));
+        auto normal=RomCloud::validateGame(item);cache.write(QJsonDocument::fromVariant(QVariantMap{{"endpoint",c.endpoint.toString()},{"games",QVariantList{normal}}}).toJson());cache.close();
+        RomCloud discs(c);const auto set=discs.downloadReview(2);QVERIFY(set["scope"].toString().contains("Individual-disc downloads are not supported"));
+        QCOMPARE(set["entry"].toString(),QString("set.m3u"));QCOMPARE(set["files"].toList().size(),3);
+        QCOMPARE(set["files"].toList()[2].toMap()["role"].toString(),QString("Disc playlist"));
+        auto changed=normal;auto files=changed["files"].toList();auto file=files[0].toMap();file["hash"]=QString(40,'e');files[0]=file;changed["files"]=files;
+        QVERIFY(set["editionId"].toString()!=RomCloud::editionIdentity(c.endpoint,changed));
+    }
+    void boundedConnectionRecovery_data() {
+        QTest::addColumn<QString>("kind");QTest::addColumn<int>("requestsExpected");QTest::addColumn<bool>("installedExpected");
+        QTest::newRow("recover")<<QString("recover")<<2<<true;
+        QTest::newRow("preexisting-prefix")<<QString("preexisting-prefix")<<2<<true;
+        QTest::newRow("twice")<<QString("twice")<<2<<false;
+        for(const auto& kind:{"unknown-window","away","no-progress","extra-save","changed-plan","cancel","http-error","bad-hash","wrong-length","changed-after-notice","away-after-notice"})
+            QTest::newRow(kind)<<QString(kind)<<1<<false;
+        QTest::newRow("range-ignored")<<QString("range-ignored")<<2<<false;
+        QTest::newRow("wrong-range")<<QString("wrong-range")<<2<<false;
+    }
+    void boundedConnectionRecovery() {
+        QFETCH(QString,kind);QFETCH(int,requestsExpected);QFETCH(bool,installedExpected);
+        QTemporaryDir dir;QTcpServer server;QVERIFY(server.listen(QHostAddress::LocalHost));
+        const auto root=QDir(dir.path()).canonicalPath()+"/roms";QVERIFY(QDir().mkpath(root));bool foreground=true;
+        RomCloudConfig c{QUrl("http://127.0.0.1:"+QString::number(server.serverPort())),"synthetic-token",root,dir.path()+"/cache"};
+        if(kind!="unknown-window")c.downloadWindow=[&]{return foreground;};
+        QVERIFY(QDir().mkpath(c.cache));QFile cache(c.cache+"/catalogue.json");QVERIFY(cache.open(QIODevice::WriteOnly));
+        cache.write(QJsonDocument::fromVariant(QVariantMap{{"endpoint",c.endpoint.toString()},{"games",QVariantList{RomCloud::validateGame(game())}}}).toJson());cache.close();
+        if(kind=="preexisting-prefix") {
+            const auto folder=root+"/nova-cloud/1.partial";QVERIFY(QDir().mkpath(folder));
+            auto plan=RomCloud::validateGame(game());plan["endpoint"]=c.endpoint.toString();
+            QFile marker(folder+"/.plan.json");QVERIFY(marker.open(QIODevice::WriteOnly));marker.write(QJsonDocument::fromVariant(plan).toJson());marker.close();
+            QFile prefix(folder+"/Example.sfc");QVERIFY(prefix.open(QIODevice::WriteOnly));QCOMPARE(prefix.write(payload.left(123)),qint64(123));
+        }
+        int requests=0;QList<QByteArray> ranges;
+        connect(&server,&QTcpServer::newConnection,this,[&]{auto socket=server.nextPendingConnection();auto buffer=new QByteArray;
+            connect(socket,&QObject::destroyed,this,[buffer]{delete buffer;});
+            connect(socket,&QTcpSocket::readyRead,socket,[&,socket,buffer]{buffer->append(socket->readAll());if(!buffer->contains("\r\n\r\n"))return;
+                socket->disconnect(socket,nullptr,socket,nullptr);++requests;
+                QByteArray range;for(const auto& line:buffer->split('\n'))if(line.toLower().startsWith("range:"))range=line.trimmed();ranges.append(range);
+                if(kind=="away")foreground=false;
+                const auto folder=root+"/nova-cloud/1.partial";
+                if(kind=="extra-save") {QFile save(folder+"/owner.srm");if(!save.open(QIODevice::WriteOnly)||save.write("protected-save")!=14)qFatal("Save fixture failed");}
+                if(kind=="changed-plan") {QFile plan(folder+"/.plan.json");if(!plan.open(QIODevice::ReadOnly))qFatal("Plan fixture failed");auto j=QJsonDocument::fromJson(plan.readAll()).object();plan.close();j["endpoint"]="https://example.invalid";if(!plan.open(QIODevice::WriteOnly|QIODevice::Truncate))qFatal("Plan fixture write failed");plan.write(QJsonDocument(j).toJson());}
+                if(kind=="http-error") {socket->write("HTTP/1.1 503 Unavailable\r\nContent-Length: 1\r\nConnection: close\r\n\r\nx");socket->disconnectFromHost();return;}
+                if(kind=="wrong-length") {socket->write("HTTP/1.1 200 OK\r\nContent-Length: 123\r\nConnection: close\r\n\r\n"+payload.left(123));socket->disconnectFromHost();return;}
+                if(kind=="bad-hash") {socket->write("HTTP/1.1 200 OK\r\nContent-Length: 65536\r\nConnection: close\r\n\r\n"+QByteArray(65536,'z'));socket->disconnectFromHost();return;}
+                const qint64 start=range.isEmpty()?0:range.split('=').value(1).split('-').value(0).toLongLong();
+                if(requests==1 || kind=="twice") {
+                    const auto header=start?QByteArray("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes ")+QByteArray::number(start)+"-65535/65536\r\nContent-Length: "+QByteArray::number(65536-start)+"\r\n":QByteArray("HTTP/1.1 200 OK\r\nContent-Length: 65536\r\n");
+                    socket->write(header+"Connection: close\r\n\r\n"+(kind=="no-progress"?QByteArray():payload.mid(start,123)));socket->disconnectFromHost();return;
+                }
+                if(kind=="wrong-range")socket->write("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 124-65535/65536\r\nContent-Length: 65413\r\nConnection: close\r\n\r\n"+payload.mid(123));
+                else if(kind=="range-ignored")socket->write("HTTP/1.1 200 OK\r\nContent-Length: 65536\r\nConnection: close\r\n\r\n"+payload);
+                else socket->write("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes "+QByteArray::number(start)+"-65535/65536\r\nContent-Length: "+QByteArray::number(65536-start)+"\r\nConnection: close\r\n\r\n"+payload.mid(start));
+                socket->disconnectFromHost();
+            });connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
+        });
+        RomCloud cloud(c);bool cancelled=false;
+        connect(&cloud,&RomCloud::changed,this,[&]{if(!cancelled && cloud.message().contains("Retrying")){
+            if(kind=="cancel"){cancelled=true;cloud.cancel();}
+            if(kind=="away-after-notice"){cancelled=true;foreground=false;}
+            if(kind=="changed-after-notice"){cancelled=true;QFile marker(root+"/nova-cloud/1.partial/.plan.json");if(!marker.open(QIODevice::WriteOnly|QIODevice::Truncate)||marker.write("{}")!=2)qFatal("Late plan mutation failed");}
+        }});
+        cloud.install(1);QTRY_VERIFY_WITH_TIMEOUT(!cloud.busy(),5000);
+        QCOMPARE(requests,requestsExpected);QCOMPARE(cloud.games()[0].toMap()["installed"].toBool(),installedExpected);
+        const auto partial=root+"/nova-cloud/1.partial/Example.sfc";
+        if(requestsExpected==2)QCOMPARE(ranges[1],kind=="preexisting-prefix"?QByteArray("Range: bytes=246-"):QByteArray("Range: bytes=123-"));
+        if(installedExpected) {QFile actual(root+"/nova-cloud/1/Example.sfc");QVERIFY(actual.open(QIODevice::ReadOnly));QCOMPARE(actual.readAll(),payload);server.close();RomCloud offline(c);QSignalSpy launch(&offline,&RomCloud::launchRequested);offline.play(1);QTRY_VERIFY_WITH_TIMEOUT(!offline.busy(),3000);QCOMPARE(launch.count(),1);}
+        else {QVERIFY(QFileInfo::exists(partial));QVERIFY(!QFileInfo::exists(root+"/nova-cloud/1/.nova-install.json"));if(kind=="twice")QCOMPARE(QFileInfo(partial).size(),qint64(246));if(kind=="range-ignored" || kind=="wrong-range")QCOMPARE(QFileInfo(partial).size(),qint64(123));}
+        if(kind=="extra-save") {QFile save(root+"/nova-cloud/1.partial/owner.srm");QVERIFY(save.open(QIODevice::ReadOnly));QCOMPARE(save.readAll(),QByteArray("protected-save"));}
+        if(kind=="cancel")QVERIFY(cancelled);
+    }
+    void automaticRetryBudgetSpansAllDiscs() {
+        QTemporaryDir dir;QTcpServer server;QVERIFY(server.listen(QHostAddress::LocalHost));
+        const auto root=QDir(dir.path()).canonicalPath()+"/roms";QVERIFY(QDir().mkpath(root));
+        RomCloudConfig c{QUrl("http://127.0.0.1:"+QString::number(server.serverPort())),"synthetic-token",root,dir.path()+"/cache",{},[]{return true;}};
+        auto item=game(1,"disc-1.chd","ps");auto files=item["files"].toList();
+        auto second=files[0].toMap();second["file_name"]="disc-2.chd";second["id"]=4;files.append(second);
+        const QByteArray playlistBytes="disc-1.chd\ndisc-2.chd\n";
+        auto playlist=second;playlist["file_name"]="set.m3u";playlist["id"]=5;playlist["file_size_bytes"]=playlistBytes.size();playlist["sha1_hash"]=QString(QCryptographicHash::hash(playlistBytes,QCryptographicHash::Sha1).toHex());files.append(playlist);item["files"]=files;
+        QVERIFY(QDir().mkpath(c.cache));QFile cache(c.cache+"/catalogue.json");QVERIFY(cache.open(QIODevice::WriteOnly));
+        cache.write(QJsonDocument::fromVariant(QVariantMap{{"endpoint",c.endpoint.toString()},{"games",QVariantList{RomCloud::validateGame(item)}}}).toJson());cache.close();
+        int requests=0;
+        connect(&server,&QTcpServer::newConnection,this,[&]{auto socket=server.nextPendingConnection();auto buffer=new QByteArray;
+            connect(socket,&QObject::destroyed,this,[buffer]{delete buffer;});
+            connect(socket,&QTcpSocket::readyRead,socket,[&,socket,buffer]{buffer->append(socket->readAll());if(!buffer->contains("\r\n\r\n"))return;
+                socket->disconnect(socket,nullptr,socket,nullptr);++requests;
+                if(buffer->contains("/set.m3u "))socket->write("HTTP/1.1 200 OK\r\nContent-Length: "+QByteArray::number(playlistBytes.size())+"\r\nConnection: close\r\n\r\n"+playlistBytes);
+                else if(buffer->contains("Range: bytes=123-"))socket->write("HTTP/1.1 206 Partial Content\r\nContent-Range: bytes 123-65535/65536\r\nContent-Length: 65413\r\nConnection: close\r\n\r\n"+payload.mid(123));
+                else socket->write("HTTP/1.1 200 OK\r\nContent-Length: 65536\r\nConnection: close\r\n\r\n"+payload.left(123));
+                socket->disconnectFromHost();
+            });connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
+        });
+        RomCloud cloud(c);cloud.install(1);QTRY_VERIFY_WITH_TIMEOUT(!cloud.busy(),5000);
+        QCOMPARE(requests,3);QVERIFY(!cloud.games()[0].toMap()["installed"].toBool());
+        QFile first(root+"/nova-cloud/1.partial/disc-1.chd");QVERIFY(first.open(QIODevice::ReadOnly));QCOMPARE(first.readAll(),payload);
+        QCOMPARE(QFileInfo(root+"/nova-cloud/1.partial/disc-2.chd").size(),qint64(123));
+        QVERIFY(!QFileInfo::exists(root+"/nova-cloud/1/.nova-install.json"));
+    }
     void queuePersistsWithoutExecutionAndUnqueueKeepsFiles() {
         QTemporaryDir dir;auto c=removalFixture(dir,true);c.downloadWindow=[]{return false;};
         const auto queue=c.cache+"/download-queue.json",part=c.root+"/nova-cloud/1.partial/Example.sfc";
@@ -164,13 +313,15 @@ private slots:
             connect(socket,&QTcpSocket::disconnected,socket,&QObject::deleteLater);
             connect(socket,&QTcpSocket::destroyed,this,[buffer]{delete buffer;});
         });
-        const bool interrupted=kind=="foreground-pause" || kind=="connection-lost";
+        const bool interrupted=kind=="foreground-pause";
         {
             RomCloud cloud(c);cloud.refresh();QTRY_VERIFY_WITH_TIMEOUT(!cloud.busy(),3000);QCOMPARE(cloud.games().size(),2);
             QVERIFY(cloud.enqueueDownload(1));QVERIFY(cloud.enqueueDownload(2));
             connect(&cloud,&RomCloud::changed,this,[&]{if(kind=="foreground-pause" && foreground && cloud.busy() && cloud.progress()>0){foreground=false;cloud.reevaluateDownloadWindow();}});
             cloud.startDownloads();QTRY_VERIFY_WITH_TIMEOUT(!cloud.queueRunning() && !cloud.busy(),5000);
-            QCOMPARE(order,interrupted?QList<int>{1}:(QList<int>{1,2}));
+            const auto expectedOrder=interrupted?QList<int>{1}:kind=="connection-lost"?QList<int>{1,1,2}:QList<int>{1,2};
+            QCOMPARE(order,expectedOrder);
+            if(kind=="connection-lost")QVERIFY(ranged);
             if(interrupted) {
                 QCOMPARE(cloud.downloads()[0].toMap()["state"].toString(),kind=="foreground-pause"?QString("paused"):QString("blocked"));
                 QCOMPARE(QFileInfo(root+"/nova-cloud/1.partial/One.sfc").size(),qint64(123));
@@ -178,7 +329,7 @@ private slots:
             } else for(const auto& raw:cloud.downloads())QCOMPARE(raw.toMap()["state"].toString(),QString("ready"));
         }
         RomCloud reopened(c);QVERIFY(!reopened.queueRunning());QVERIFY(!reopened.busy());
-        QCOMPARE(order.size(),interrupted?1:2);
+        QCOMPARE(order.size(),interrupted?1:kind=="connection-lost"?3:2);
         if(interrupted){reopened.startDownloads(1);QTRY_VERIFY_WITH_TIMEOUT(!reopened.queueRunning() && !reopened.busy(),5000);QVERIFY(ranged);QCOMPARE(order,(QList<int>{1,1,2}));}
         for(const auto& raw:reopened.downloads()) {QCOMPARE(raw.toMap()["state"].toString(),QString("ready"));QVERIFY(!raw.toMap()["editionId"].toString().isEmpty());}
         QCOMPARE(detailsRequests,kind=="details"?1:0);
@@ -366,6 +517,44 @@ private slots:
         cloud.play(1);QTRY_VERIFY_WITH_TIMEOUT(!cloud.busy(),3000);
         QVERIFY(cancelled);QCOMPARE(launch.count(),0);
     }
+    void launchRechecksItsForegroundAndCancellationBoundaries_data() {
+        QTest::addColumn<QString>("boundary");
+        for(const auto& b:{"unknown-window","already-away","while-hashing","after-checksum","prepared-cancel","prepared-away","requested-cancel","requested-away"})QTest::newRow(b)<<QString(b);
+    }
+    void launchRechecksItsForegroundAndCancellationBoundaries() {
+        QFETCH(QString,boundary);QTemporaryDir dir;auto config=removalFixture(dir);bool foreground=boundary!="already-away",triggered=!foreground || boundary=="unknown-window";int dispatched=0;QString sentPath,sentCore;
+        if(boundary!="unknown-window")config.downloadWindow=[&]{return foreground;};
+        config.launch=[&](const QString& path,const QString& core){++dispatched;sentPath=path;sentCore=core;return true;};RomCloud cloud(config);
+        QSignalSpy prepared(&cloud,&RomCloud::launchPrepared),requested(&cloud,&RomCloud::launchRequested),accepted(&cloud,&RomCloud::launchAccepted);
+        connect(&cloud,&RomCloud::changed,this,[&]{if(boundary=="after-checksum" && cloud.busy() && cloud.progress()==1){foreground=false;triggered=true;}});
+        connect(&cloud,&RomCloud::launchPrepared,this,[&]{
+            if(boundary=="prepared-cancel"){triggered=true;cloud.cancel();}
+            if(boundary=="prepared-away"){triggered=true;foreground=false;}
+        });
+        connect(&cloud,&RomCloud::launchRequested,this,[&]{
+            if(boundary=="requested-cancel"){triggered=true;cloud.cancel();}
+            if(boundary=="requested-away"){triggered=true;foreground=false;}
+        });
+        cloud.play(1);
+        if(boundary=="while-hashing"){QVERIFY(cloud.busy());foreground=false;triggered=true;}
+        QTRY_VERIFY_WITH_TIMEOUT(!cloud.busy(),3000);QVERIFY(triggered);QCOMPARE(accepted.count(),0);QCOMPARE(dispatched,0);
+        const bool requestedBoundary=boundary.startsWith("requested-");QCOMPARE(requested.count(),requestedBoundary?1:0);
+        QCOMPARE(prepared.count(),boundary.startsWith("prepared-") || requestedBoundary?1:0);
+        QVERIFY2(cloud.message().contains(boundary.endsWith("cancel")?"Paused":"Library",Qt::CaseInsensitive),qPrintable(cloud.message()));
+        QFile retained(config.root+"/nova-cloud/1/Example.sfc");QVERIFY(retained.open(QIODevice::ReadOnly));QCOMPARE(retained.readAll(),payload);
+        // A fresh deliberate retry in the foreground is allowed; an old request is not retried automatically.
+        if(boundary=="unknown-window")return;
+        disconnect(&cloud,nullptr,this,nullptr);foreground=true;requested.clear();cloud.play(1);QTRY_VERIFY_WITH_TIMEOUT(!cloud.busy(),3000);QCOMPARE(requested.count(),1);QCOMPARE(dispatched,1);QCOMPARE(accepted.count(),1);
+        QCOMPARE(sentPath,config.root+"/nova-cloud/1/Example.sfc");QCOMPARE(sentCore,QString("snes9x_libretro_android.so"));
+    }
+    void platformAcceptanceIsSeparateFromGameBoot_data(){QTest::addColumn<bool>("accepted");QTest::newRow("refused")<<false;QTest::newRow("accepted")<<true;}
+    void platformAcceptanceIsSeparateFromGameBoot(){
+        QFETCH(bool,accepted);QTemporaryDir dir;auto config=removalFixture(dir);int calls=0;
+        config.downloadWindow=[]{return true;};config.launch=[&](const QString&,const QString&){++calls;return accepted;};RomCloud cloud(config);
+        QSignalSpy observation(&cloud,&RomCloud::launchAccepted);cloud.play(1);QTRY_VERIFY_WITH_TIMEOUT(!cloud.busy(),3000);
+        QCOMPARE(calls,1);QCOMPARE(observation.count(),accepted?1:0);
+        QVERIFY2(cloud.message().contains(accepted?"not confirmed":"could not accept"),qPrintable(cloud.message()));
+    }
     void changedMarkerCannotRedirectPendingLaunch() {
         QTemporaryDir dir;auto config=removalFixture(dir);RomCloud cloud(config);
         QSignalSpy launch(&cloud,&RomCloud::launchRequested);cloud.play(1);QVERIFY(cloud.busy());
@@ -438,6 +627,84 @@ private slots:
         const auto plan=cloud.installPlan(999);
         QVERIFY(!plan["spaceKnown"].toBool());QVERIFY(!plan["fits"].toBool());
         QVERIFY(!plan.contains("freeBytes"));QVERIFY(!plan["reason"].toString().isEmpty());
+    }
+    void absentSelectedRootIsNotRecreatedByInstall_data() {
+        QTest::addColumn<QString>("kind");
+        for(auto kind:{"configured-but-absent","disappeared-after-review","queued-root-disappeared"})
+            QTest::newRow(kind)<<QString(kind);
+    }
+    void absentSelectedRootIsNotRecreatedByInstall() {
+        QFETCH(QString,kind);QTemporaryDir dir;auto c=removalFixture(dir,true);
+        c.downloadWindow=[]{return true;};
+        RomCloud cloud(c);QVERIFY(cloud.downloadReview(1)["spaceKnown"].toBool());
+        if(kind=="queued-root-disappeared")QVERIFY(cloud.enqueueDownload(1));
+        const auto retained=c.root+".retained";QVERIFY(QDir().rename(c.root,retained));
+        if(kind=="configured-but-absent") {
+            // A configured folder that has never been provisioned has the same safe refusal.
+            c.root=QDir(dir.path()).canonicalPath()+"/not-provisioned";
+        }
+        RomCloud absent(c);auto* subject=kind=="configured-but-absent"?&absent:&cloud;
+        auto review=subject->downloadReview(1);
+        QVERIFY(!review["spaceKnown"].toBool());QVERIFY(!review["fits"].toBool());
+        QVERIFY(!QFileInfo::exists(c.root));
+        if(kind=="queued-root-disappeared") {subject->startDownloads();QTRY_VERIFY_WITH_TIMEOUT(!subject->queueRunning(),3000);}
+        else subject->install(1);
+        QVERIFY2(!QFileInfo::exists(c.root),"Install recreated the absent selected storage before checking it");
+        QVERIFY(!subject->busy());QVERIFY(subject->message().contains("storage",Qt::CaseInsensitive));
+        QFile bytes(retained+"/nova-cloud/1.partial/Example.sfc");QVERIFY(bytes.open(QIODevice::ReadOnly));QCOMPARE(bytes.readAll(),payload.left(123));
+        QVERIFY(!QFileInfo::exists(c.root+"/nova-cloud"));
+    }
+    void retainedRemovalBlocksFreshDownload_data() {
+        QTest::addColumn<QString>("suffix");QTest::addColumn<QString>("kind");
+        QStringList kinds{"directory","file"};
+#ifdef Q_OS_UNIX
+        kinds<<"symlink"<<"dangling"<<"fifo";
+#endif
+        for(const auto& suffix:{QString(".removed"),QString(".partial.removed")})for(const auto& kind:kinds)QTest::newRow(qPrintable(suffix+"-"+kind))<<suffix<<kind;
+    }
+    void retainedRemovalBlocksFreshDownload() {
+        QFETCH(QString,suffix);QFETCH(QString,kind);QTemporaryDir d;auto c=removalFixture(d,true);c.downloadWindow=[]{return true;};const auto held=c.root+"/nova-cloud/1"+suffix,foreign=d.path()+"/foreign";
+        auto write=[](const QString& path){QFile f(path);if(!f.open(QIODevice::WriteOnly))qFatal("Owned retained fixture failed");f.write("protected synthetic progress");};
+        if(kind=="directory") {QVERIFY(QDir().mkdir(held));write(held+"/late.srm");}
+        else if(kind=="file")write(held);
+        else if(kind=="symlink") {QVERIFY(QDir().mkdir(foreign));write(foreign+"/late.srm");QVERIFY(QFile::link(foreign,held));}
+        else if(kind=="dangling")QVERIFY(QFile::link(foreign,held));
+#ifdef Q_OS_UNIX
+        else if(kind=="fifo")QCOMPARE(::mkfifo(QFile::encodeName(held).constData(),0600),0);
+#endif
+        RomCloud cloud(c);QVERIFY(cloud.enqueueDownload(1));const auto plan=cloud.downloadReview(1);QVERIFY(plan["blocked"].toBool());QVERIFY(plan["removalRetained"].toBool());QVERIFY(!plan["fits"].toBool());QVERIFY(!plan["resumeAvailable"].toBool());QVERIFY(plan["reason"].toString().contains("removal recovery"));
+        QVERIFY(cloud.games()[0].toMap()["downloadBlocked"].toBool());QCOMPARE(cloud.downloads()[0].toMap()["state"].toString(),QString("blocked"));
+        cloud.startDownloads(1);QTRY_VERIFY_WITH_TIMEOUT(!cloud.queueRunning(),3000);QVERIFY(!cloud.busy());QVERIFY(cloud.queueMessage().contains("removal recovery"));QVERIFY(!QFileInfo::exists(c.root+"/nova-cloud/1"));
+        QFile partial(c.root+"/nova-cloud/1.partial/Example.sfc");QVERIFY(partial.open(QIODevice::ReadOnly));QCOMPARE(partial.readAll(),payload.left(123));
+        if(kind=="directory" || kind=="file" || kind=="symlink") {QFile progress(kind=="directory"?held+"/late.srm":kind=="symlink"?foreign+"/late.srm":held);QVERIFY(progress.open(QIODevice::ReadOnly));QCOMPARE(progress.readAll(),QByteArray("protected synthetic progress"));}
+        else QVERIFY(QFileInfo::exists(held)||QFileInfo(held).isSymLink());
+    }
+    void retainedRemovalDoesNotReplaceOrInvalidateCurrentInstalledCopy() {
+        QTemporaryDir d;auto c=removalFixture(d);const auto held=c.root+"/nova-cloud/1.removed";QVERIFY(QDir().mkdir(held));QFile keep(held+"/late.srm");QVERIFY(keep.open(QIODevice::WriteOnly));keep.write("keep retained progress");keep.close();RomCloud cloud(c);QVERIFY(cloud.installPlan(1)["installed"].toBool());QVERIFY(cloud.games()[0].toMap()["installed"].toBool());cloud.install(1);QVERIFY(cloud.message().contains("Already downloaded"));QFile rom(c.root+"/nova-cloud/1/Example.sfc");QVERIFY(rom.open(QIODevice::ReadOnly));QCOMPARE(rom.readAll(),payload);QVERIFY(keep.open(QIODevice::ReadOnly));QCOMPARE(keep.readAll(),QByteArray("keep retained progress"));
+    }
+    void managedRemovalPublishesCurrentDownloadAvailability_data() {
+        QTest::addColumn<QString>("kind");
+        for(auto kind:{"complete","rollback-refusal","detached-kept"})QTest::newRow(kind)<<QString(kind);
+    }
+    void managedRemovalPublishesCurrentDownloadAvailability() {
+        QFETCH(QString,kind);QTemporaryDir d;auto c=removalFixture(d);int checks=0;
+        c.removalBlocker=[&]{
+            if(++checks==3 && kind=="rollback-refusal")return QString("Synthetic late idle refusal");
+            if(checks==3 && kind=="detached-kept") {QFile save(c.root+"/nova-cloud/1.removed/late.srm");if(!save.open(QIODevice::WriteOnly))qFatal("Synthetic late save failed");save.write("keep-new-save");}
+            return QString();
+        };
+        auto normal=RomCloud::validateGame(game());const auto edition=RomCloud::editionIdentity(c.endpoint,normal);
+        const auto scope=QString::fromLatin1(QCryptographicHash::hash((c.endpoint.toString()+"\n"+QDir::cleanPath(c.root)).toUtf8(),QCryptographicHash::Sha256).toHex());
+        const auto bytes=QJsonDocument::fromVariant(QVariantMap{{"schema",1},{"scope",scope},{"jobs",QVariantList{QVariantMap{{"id",1},{"editionId",edition},{"title","Synthetic queued game"},{"state","ready"},{"message","Download complete. Files checked."}}}}}).toJson();
+        QFile queue(c.cache+"/download-queue.json");QVERIFY(queue.open(QIODevice::WriteOnly));QCOMPARE(queue.write(bytes),qint64(bytes.size()));queue.close();
+        RomCloud cloud(c);QCOMPARE(cloud.downloads().size(),1);QVERIFY(cloud.downloads()[0].toMap()["installed"].toBool());
+        bool notifiedInstalled=true;QObject::connect(&cloud,&RomCloud::queueChanged,this,[&]{notifiedInstalled=cloud.downloads()[0].toMap()["installed"].toBool();});
+        auto plan=cloud.removalPlan(1);QVERIFY(plan["eligible"].toBool());cloud.removeDownload(1,plan["token"].toString());
+        const bool retained=kind=="rollback-refusal";QCOMPARE(cloud.downloads()[0].toMap()["installed"].toBool(),retained);QCOMPARE(notifiedInstalled,retained);
+        QVERIFY(queue.open(QIODevice::ReadOnly));QCOMPARE(queue.readAll(),bytes);queue.close();
+        if(kind=="detached-kept") {QFile save(c.root+"/nova-cloud/1.removed/late.srm");QVERIFY(save.open(QIODevice::ReadOnly));QCOMPARE(save.readAll(),QByteArray("keep-new-save"));QVERIFY(cloud.message().contains("unexpected files remain"));}
+        else if(retained) {QFile payloadFile(c.root+"/nova-cloud/1/Example.sfc");QVERIFY(payloadFile.open(QIODevice::ReadOnly));QCOMPARE(payloadFile.readAll(),payload);}
+        else QVERIFY(!QFileInfo::exists(c.root+"/nova-cloud/1"));
     }
     void removalRequiresIdleAdapterAndFreshReview() {
         QTemporaryDir d;auto c=removalFixture(d);c.removalBlocker={};RomCloud protectedCloud(c);

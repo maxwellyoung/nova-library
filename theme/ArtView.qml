@@ -21,6 +21,8 @@ Item {
     readonly property bool loaded: hasArt && image.status === Image.Ready && image.implicitHeight > 0
     readonly property bool loading: image.status === Image.Loading
     readonly property real ratio: loaded ? image.implicitWidth / image.implicitHeight : 2 / 3
+    // Short preview boxes need a smaller fallback without shrinking real artwork.
+    readonly property real fallbackUnit: Math.min(width, height * 2 / 3)
 
     Image {
         id: image
@@ -37,55 +39,60 @@ Item {
     Rectangle {
         objectName: "artFallback"
         anchors.fill: parent
-        visible: !art.loaded
+        visible: !art.loaded && art.width > 0 && art.height > 0
+        clip: true
         color: art.slabColor
 
         Column {
-            visible: art.width >= 140
-            x: Math.round(art.width * 0.08); y: x
+            objectName: "artFallbackHeader"
+            visible: art.fallbackUnit >= 140
+            x: Math.round(art.fallbackUnit * 0.08); y: x
             width: parent.width - x * 2
-            spacing: Math.round(art.width * 0.05)
+            spacing: Math.round(art.fallbackUnit * 0.05)
             Icon {
                 name: Lib.consoleGlyph(art.entry ? art.entry.systemId : "")
-                width: Lib.consoleWordmark(art.entry ? art.entry.systemId : "") ? Math.min(180,art.width*.65) : Math.min(80,art.width*.25)
-                height: Math.min(80,art.width*.25)
+                width: Lib.consoleWordmark(art.entry ? art.entry.systemId : "") ? Math.min(180,art.fallbackUnit*.65) : Math.min(80,art.fallbackUnit*.25)
+                height: Math.min(80,art.fallbackUnit*.25)
                 ink: art.quietColor
             }
             Text {
                 width: parent.width
                 text: art.entry ? Lib.consoleShortName({id:art.entry.systemId,name:art.entry.systemName}) : ""
                 color: art.quietColor; font.family: art.fontFamily
-                font.pixelSize: Math.max(11,Math.round(art.width * 0.055))
+                font.pixelSize: Math.max(11,Math.round(art.fallbackUnit * 0.055))
                 wrapMode: Text.Wrap; maximumLineCount: 2; elide: Text.ElideRight
             }
         }
 
         Column {
+            objectName: "artFallbackBody"
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.margins: Math.round(art.width * 0.08)
-            y: art.width >= 140 ? art.height * .43 : parent.height-height-Math.round(art.width*.08)
-            spacing: Math.round(art.width * 0.03)
+            anchors.margins: Math.round(art.fallbackUnit * 0.08)
+            y: art.fallbackUnit >= 140 ? art.height * .43 : parent.height-height-Math.round(art.fallbackUnit*.08)
+            spacing: Math.round(art.fallbackUnit * 0.03)
 
+            FontMetrics { id: titleMetrics; font: fallbackTitle.font }
             Text {
+                id: fallbackTitle
                 width: parent.width
                 text: art.entry ? art.entry.title : ""
                 color: art.textColor
                 font.family: art.fontFamily
                 font.weight: Font.DemiBold
-                font.pixelSize: Math.max(12, Math.round(art.width * (art.width >= 140 ? 0.14 : 0.1)))
+                font.pixelSize: Math.max(1, Math.min(Math.max(12, Math.round(art.fallbackUnit * (art.fallbackUnit >= 140 ? 0.14 : 0.1))), Math.floor((art.height - Math.round(art.fallbackUnit * .16)) / 2)))
                 lineHeight: 1.15
                 wrapMode: Text.Wrap
-                maximumLineCount: art.width >= 140 ? 3 : 4
+                maximumLineCount: art.fallbackUnit >= 140 ? 3 : Math.max(1, Math.min(4, Math.floor((art.height - Math.round(art.fallbackUnit * .16)) / Math.max(1, titleMetrics.lineSpacing * 1.15))))
                 elide: Text.ElideRight
             }
             Text {
                 width: parent.width
-                visible: art.width >= 140
+                visible: art.fallbackUnit >= 140
                 text: art.loading ? "Loading artwork…" : "No cover yet"
                 color: art.quietColor
                 font.family: art.fontFamily
-                font.pixelSize: Math.max(10, Math.round(art.width * 0.07))
+                font.pixelSize: Math.max(10, Math.round(art.fallbackUnit * 0.07))
                 elide: Text.ElideRight
             }
         }

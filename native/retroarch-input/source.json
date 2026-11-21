@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/libretro/RetroArch",
+  "commit": "69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576",
+  "version": "1.22.2",
+  "source": "input/input_driver.c",
+  "sourceSha256": "6200c8ee814b0bb588210f2cb2e7d3cbc6cbd7ae535edbf77d04bd46f6cd994e",
+  "function": "input_joypad_axis",
+  "functionSha256": "69272f81f20d0ae5981deacc41dc9c130978907c7d1fc282d772566d176cabb4",
+  "configurationSourceSha256": "67d33a5933bd3464df2c7846b05e644ca9d4da7596258e6814dcc782bdbffdca"
+}

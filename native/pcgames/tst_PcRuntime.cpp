@@ -23,6 +23,21 @@ private slots:
         QVERIFY(r["message"].toString().contains("boot is not confirmed"));QCOMPARE(r.size(),3);QVERIFY(!r.contains("secret"));
         r=client.openGame("steam:123","droiddeck","0.7.0");QVERIFY(r["accepted"].toBool());QCOMPARE(runtime,QString("droiddeck"));QCOMPARE(calls,2);
     }
+    void checkedUpdateRequiresReviewAndKeepsTheExactVersionAtDispatch(){
+        int calls=0;QString dispatchedVersion;
+        states[0]=QVariantMap{{"id","droiddeck"},{"available",true},{"version","0.7.1"}};
+        PcRuntime client(PcRuntimePlatform{[&]{return states;},[]{return true;},[&](const QString& runtime,int app,const QString& version){
+            if(runtime!="droiddeck" || app!=123)qFatal("Checked update changed exact target");++calls;dispatchedVersion=version;return QVariantMap{{"accepted",true}};
+        }});
+        auto result=client.openGame("steam:123","droiddeck","0.7.0");
+        QCOMPARE(result["code"].toString(),QString("version-changed"));QCOMPARE(calls,0);
+        result=client.openGame("steam:123","droiddeck","0.7.1");
+        QVERIFY(result["accepted"].toBool());QCOMPARE(calls,1);QCOMPARE(dispatchedVersion,QString("0.7.1"));
+        QVERIFY(result["message"].toString().contains("boot is not confirmed"));
+        states[0]=QVariantMap{{"id","droiddeck"},{"available",true},{"version","0.7.2"}};
+        result=client.openGame("steam:123","droiddeck","0.7.1");QCOMPARE(result["code"].toString(),QString("version-changed"));QCOMPARE(calls,1);
+        result=client.openGame("steam:123","droiddeck","0.7.2");QCOMPARE(result["code"].toString(),QString("unsupported-version"));QCOMPARE(calls,1);
+    }
     void refusalNeverFallsBackToAnotherBackend(){
         bool foreground=true;int calls=0;
         PcRuntime client(PcRuntimePlatform{[&]{return states;},[&]{return foreground;},[&](const QString&,int,const QString&){++calls;return QVariantMap{{"accepted",false},{"message","private platform details"}};}});
@@ -36,7 +51,7 @@ private slots:
     void changedVersionAndMalformedStateCannotAuthorizeDispatch(){
         int calls=0;PcRuntime client(PcRuntimePlatform{[&]{return states;},[]{return true;},[&](const QString&,int,const QString&){++calls;return QVariantMap{{"accepted",true}};}});
         auto r=client.openGame("steam:123","droiddeck","0.6.9");QCOMPARE(r["code"].toString(),QString("version-changed"));QCOMPARE(calls,0);
-        for(const auto& version:{"0.7.1","0.7.0-beta","0.7.0\n",""}){
+        for(const auto& version:{"0.7.2","0.7.1-beta","0.7.0-beta","0.7.0\n",""}){
             states[0]=QVariantMap{{"id","droiddeck"},{"available",true},{"version",version}};
             r=client.openGame("steam:123","droiddeck",version);QVERIFY(!r["accepted"].toBool());QCOMPARE(calls,0);
         }

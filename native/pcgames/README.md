@@ -8,7 +8,7 @@ The source-reviewed protocols are:
 
 | Runtime | Version | Exported entry | Action |
 | --- | --- | --- | --- |
-| DroidDeck | 0.7.0 | `com.droiddeck.launcher.FrontEndActivity` | `com.droiddeck.launcher.LAUNCH_GAME` |
+| DroidDeck | 0.7.0, 0.7.1 | `com.droiddeck.launcher.FrontEndActivity` | `com.droiddeck.launcher.LAUNCH_GAME` |
 | GameNative | 1.4.0 | `app.gamenative.MainActivity` | `app.gamenative.LAUNCH_GAME` |
 
 Both receive only a positive signed 32-bit integer `app_id` and
@@ -20,6 +20,17 @@ Sources: [DroidDeck 0.7.0 manifest](https://github.com/Droid-Deck/DroidDeck/blob
 [public request parser](https://github.com/Droid-Deck/DroidDeck/blob/0.7.0/app/src/main/java/com/droiddeck/launcher/frontend/GameLaunchIntent.kt),
 [GameNative 1.4.0 manifest](https://github.com/utkarshdalal/GameNative/blob/v1.4.0/app/src/main/AndroidManifest.xml),
 [request parser](https://github.com/utkarshdalal/GameNative/blob/v1.4.0/app/src/main/java/app/gamenative/utils/IntentLaunchManager.kt).
+DroidDeck 0.7.1 was separately checked at commit
+[`cdff94e72c45da50af43bbceff28effaf0179caf`](https://github.com/Droid-Deck/DroidDeck/commit/cdff94e72c45da50af43bbceff28effaf0179caf):
+its [exported manifest entry](https://github.com/Droid-Deck/DroidDeck/blob/cdff94e72c45da50af43bbceff28effaf0179caf/app/src/main/AndroidManifest.xml)
+retains the same action; its [public parser](https://github.com/Droid-Deck/DroidDeck/blob/cdff94e72c45da50af43bbceff28effaf0179caf/app/src/main/java/com/droiddeck/launcher/frontend/GameLaunchIntent.kt)
+and front-end activity are byte-identical to 0.7.0. It still accepts the positive
+integer Steam ID and `STEAM` source used here. Both exact versions remain
+allowlisted; this is not a version range. An old remembered 0.7.0 choice still
+requires explicit review before dispatch to 0.7.1. Unknown/suffixed versions stay
+blocked. No installed APK, signer, game, GPU/driver or physical protocol result
+is established by this source audit.
+
 These are reviewed source interfaces; no third-party APK was downloaded or run
 for this source implementation.
 

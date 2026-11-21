@@ -80,7 +80,7 @@ def clone_local(source, dest, commit):
         clone_local(source / name, dest / name, revision)
 
 
-def prepare(upstream, output, cloud=False, root=ROOT, *, stopping_notes=False, controller_check=False, pc_runtime=False):
+def prepare(upstream, output, cloud=False, root=ROOT, *, stopping_notes=False, controller_check=False, pc_runtime=False, save_copies=False, checked_memory=False, failure_reports=False):
     if Path(upstream).is_symlink() or Path(output).is_symlink():
         raise ValueError('Linked workspace roots require separate review')
     upstream, output, root = Path(upstream).resolve(), Path(output).resolve(), Path(root).resolve()
@@ -89,6 +89,8 @@ def prepare(upstream, output, cloud=False, root=ROOT, *, stopping_notes=False, c
     if upstream == output or upstream in output.parents or root == output or root in output.parents:
         raise ValueError('Build workspace must be outside the input checkout and Nova source')
     spec = json.loads((root / 'native/upstream.json').read_text())
+    if failure_reports and not save_copies:
+        raise ValueError("Failure reports require the matching save-copy reader")
     pins = check_upstream(upstream, spec['commit'])
     patch = root / 'native' / spec['patch']
     if sha(patch) != spec['patchSha256']:
@@ -116,9 +118,22 @@ def prepare(upstream, output, cloud=False, root=ROOT, *, stopping_notes=False, c
         inputs['tools/apply_pc_runtime.py'] = sha(root / 'tools/apply_pc_runtime.py')
         for name in ('PcRuntime.h','PcRuntime.cpp','pcgames.pri','PcLaunchContract.java','PcRuntimeBridge.java'):
             inputs['native/pcgames/'+name] = sha(root / 'native/pcgames' / name)
+    if save_copies:
+        inputs['tools/apply_save_copies.py'] = sha(root / 'tools/apply_save_copies.py')
+        for name in ('SaveCopies.h','SaveCopies.cpp','savecopies.pri'):
+            inputs['native/savecopies/'+name] = sha(root / 'native/savecopies' / name)
+    if failure_reports:
+        inputs['tools/apply_failure_reports.py'] = sha(root / 'tools/apply_failure_reports.py')
+        for name in ('FailureReports.h','FailureReports.cpp','DocumentCopy.h','DocumentCopy.cpp','failure-reports.pri','ThemeFailureReview.qml'):
+            inputs['native/failure-reports/'+name] = sha(root / 'native/failure-reports' / name)
+        inputs['theme/FailurePreview.qml'] = sha(root / 'theme/FailurePreview.qml')
     output.mkdir(parents=True, exist_ok=False)
     marker = output / 'PREPARATION-INCOMPLETE'
     marker.write_text('Do not build or distribute this workspace until preparation succeeds.\n')
+    if checked_memory:
+        inputs['tools/apply_theme_memory.py'] = sha(root / 'tools/apply_theme_memory.py')
+        for name in ('Memory.cpp', 'Memory.h', 'upstream.json'):
+            inputs['native/theme-memory/' + name] = sha(root / 'native/theme-memory' / name)
     source = output / 'source'
     clone_local(upstream, source, spec['commit'])
     check_upstream(source, spec['commit'])
@@ -139,6 +154,15 @@ def prepare(upstream, output, cloud=False, root=ROOT, *, stopping_notes=False, c
     if pc_runtime:
         subprocess.run(['python3',str(root / 'tools/apply_pc_runtime.py'),str(source),
                         '--backup',str(output / 'pc-runtime-integration-before')],check=True,stdout=subprocess.DEVNULL)
+    if save_copies:
+        subprocess.run(['python3',str(root / 'tools/apply_save_copies.py'),str(source),
+                        '--backup',str(output / 'save-copies-integration-before')],check=True,stdout=subprocess.DEVNULL)
+    if failure_reports:
+        subprocess.run(['python3', str(root / 'tools/apply_failure_reports.py'), str(source),
+                        '--backup', str(output / 'failure-reports-integration-before')], check=True, stdout=subprocess.DEVNULL)
+    if checked_memory:
+        subprocess.run(['python3', str(root / 'tools/apply_theme_memory.py'), str(source),
+                        '--backup', str(output / 'checked-memory-integration-before')], check=True, stdout=subprocess.DEVNULL)
     for name, digest in theme_hashes.items():
         data = (root / 'theme' / name).read_bytes()
         if hashlib.sha256(data).hexdigest() != digest:
@@ -152,14 +176,18 @@ def prepare(upstream, output, cloud=False, root=ROOT, *, stopping_notes=False, c
     manifest = {'schemaVersion': 1, 'upstream': {'repository': spec['repository'],
                 'commit': spec['commit'], 'submodules': pins},
                 'components': {'nativeBridge': True, 'romCloud': cloud, 'externalTheme': True,
-                               'stoppingNotes': stopping_notes, 'controllerCheck': controller_check, 'pcRuntime': pc_runtime},
+                               'stoppingNotes': stopping_notes, 'controllerCheck': controller_check, 'pcRuntime': pc_runtime,
+                               'saveCopies': save_copies},
                 'inputs': inputs, 'nativeFiles': tree(source), 'themeFiles': tree(output / 'theme'),
                 'limits': ['Source pairing only; not a build or installation receipt.',
                            'Private recorder/service code is not imported from other worktrees.',
                            'Cloud removal remains blocked without its trusted runtime adapter.',
                            'Automatic save synchronization is not enabled.',
+                           'Save copies are operator-delivered and read-only; archive checksum review is not runtime restore.',
                            'Optional native contexts require explicit preparation flags; source inclusion does not establish a UI entry point.',
                            'Controller capture is disabled until explicitly opened; exports remain private and user-requested.']}
+    if failure_reports: manifest['components']['failureReports'] = True
+    if checked_memory: manifest['components']['checkedMemory'] = True
     (output / 'nova-build-inputs.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
     # Keep the incomplete marker until final native/theme/Git validation passes.
     # A failed final check must not leave a workspace looking ready to build.
@@ -202,12 +230,16 @@ def main():
     p.add_argument('--stopping-notes', action='store_true')
     p.add_argument('--controller-check', action='store_true')
     p.add_argument('--pc-runtime', action='store_true')
+    p.add_argument('--save-copies', action='store_true')
+    p.add_argument('--checked-memory', action='store_true')
+    p.add_argument('--failure-reports', action='store_true')
     p = commands.add_parser('verify')
     p.add_argument('output', type=Path)
     args = parser.parse_args()
     try:
         result = prepare(args.upstream, args.output, args.rom_cloud,
-                         stopping_notes=args.stopping_notes, controller_check=args.controller_check, pc_runtime=args.pc_runtime) if args.command == 'prepare' else verify(args.output)
+                         stopping_notes=args.stopping_notes, controller_check=args.controller_check, pc_runtime=args.pc_runtime,
+                         save_copies=args.save_copies, checked_memory=args.checked_memory, failure_reports=args.failure_reports) if args.command == 'prepare' else verify(args.output)
         print(json.dumps({'nativeFiles': len(result['nativeFiles']), 'themeFiles': len(result['themeFiles']),
                           'components': result['components'], 'verified': True}))
     except (ValueError, OSError, subprocess.CalledProcessError) as error:

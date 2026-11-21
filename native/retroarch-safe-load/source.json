@@ -1,0 +1,12 @@
+{
+  "adapter": "retroarch-safe-disk-load-v1",
+  "repository": "https://github.com/libretro/RetroArch",
+  "commit": "69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576",
+  "version": "1.22.2",
+  "target": "tasks/task_save.c",
+  "sourceUrl": "https://raw.githubusercontent.com/libretro/RetroArch/69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576/tasks/task_save.c",
+  "beforeSha256": "d666bd11a721d4305a0e6e90739dd465c456662a9afa1449050a4c745c0cf484",
+  "afterSha256": "e3d053bddbba2caed4b962c3491a4b6f18d693871b3aa83f3ad727724d11ab48",
+  "patchSha256": "33766560cbd5b6aee5f05a53cb683df7b91441c6e392eed4bde9c0ebf0e3a795",
+  "fixtureSha256": "d4180e46b9d9d1f814eb90834343a6ce33dbb327aaf51bd8c9edf19606549f4f"
+}

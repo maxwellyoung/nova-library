@@ -1,0 +1,93 @@
+--- a/tasks/task_save.c
++++ b/tasks/task_save.c
+@@ -164,6 +164,9 @@
+    struct sram_block *blocks = NULL;
+    struct string_list *savefile_list = (struct string_list*)savefile_ptr_get();
+ 
++   if (!undo_load_buf.data || !undo_load_buf.size)
++      return false;
++
+    if (!core_info_current_supports_savestate())
+    {
+       RARCH_LOG("[State] %s\n",
+@@ -228,20 +231,18 @@
+       }
+    }
+ 
+-   /* We need to make a temporary copy of the buffer, to allow the swap below */
+-   temp_data              = malloc(undo_load_buf.size);
+-   temp_data_size         = undo_load_buf.size;
+-   memcpy(temp_data, undo_load_buf.data, undo_load_buf.size);
+-
+-   /* Swap the current state with the backup state. This way, we can undo
+-   what we're undoing */
+-   content_save_state("RAM", false);
+-
+-   ret = content_deserialize_state(temp_data, temp_data_size);
+-
+-   /* Clean up the temporary copy */
+-   free(temp_data);
+-   temp_data              = NULL;
++   /* Keep the old state until a current-state backup actually succeeds. */
++   temp_data = malloc(undo_load_buf.size);
++   if (temp_data)
++   {
++      temp_data_size = undo_load_buf.size;
++      memcpy(temp_data, undo_load_buf.data, temp_data_size);
++      ret = content_save_state("RAM", false);
++      if (ret)
++         ret = content_deserialize_state(temp_data, temp_data_size);
++      free(temp_data);
++      temp_data = NULL;
++   }
+ 
+     /* Flush back. */
+    for (i = 0; i < num_blocks; i++)
+@@ -1078,9 +1079,9 @@
+    }
+ 
+    /* Backup the current state so we can undo this load */
+-   content_save_state("RAM", false);
+-
+-   ret = content_deserialize_state(buf, _len);
++   ret = content_save_state("RAM", false);
++   if (ret)
++      ret = content_deserialize_state(buf, _len);
+ 
+    /* Flush back. */
+    for (i = 0; i < num_blocks; i++)
+@@ -1447,6 +1448,7 @@
+    }
+    else
+    {
++      void *replacement = NULL;
+       if (!data)
+       {
+          if (!(data = content_get_serialized_data(&_len)))
+@@ -1461,21 +1463,16 @@
+       /* save_to_disk is false, which means we are saving the state
+       in undo_load_buf to allow content_undo_load_state() to restore it */
+ 
+-      /* If we were holding onto an old state already, clean it up first */
+-      if (undo_load_buf.data)
+-      {
+-         free(undo_load_buf.data);
+-         undo_load_buf.data = NULL;
+-      }
+-
+-      if (!(undo_load_buf.data = malloc(_len)))
++      /* Allocate first: failed replacement must retain the previous undo. */
++      if (!(replacement = malloc(_len)))
+       {
+          free(data);
+          return false;
+       }
+-
+-      memcpy(undo_load_buf.data, data, _len);
++      memcpy(replacement, data, _len);
+       free(data);
++      free(undo_load_buf.data);
++      undo_load_buf.data = replacement;
+       undo_load_buf.size = _len;
+       strlcpy(undo_load_buf.path, path, sizeof(undo_load_buf.path));
+    }

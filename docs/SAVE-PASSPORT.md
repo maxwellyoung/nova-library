@@ -2,7 +2,9 @@
 
 `tools/save_passport.py` captures explicitly selected save files into a verified portable archive. It can verify the archive later and stage its exact bytes in a **new directory**. It never writes into an existing live save folder, deletes originals, changes emulator settings, accesses a device or synchronizes a cloud account.
 
-This is a host-side backup building block. The current frontend does not yet provide a save-history/import screen for it. A successful stage proves byte recovery, not that an emulator accepts the save or that a captured runtime state can boot. Protect current game progress and test the actual restore separately.
+This is a host-side backup building block. The optional [Save copies view](SAVE-COPIES.md) lists operator-delivered history and checks archive bytes; it provides no import or live restore action. A successful stage proves byte recovery, not that an emulator accepts the save or that a captured runtime state can boot. Protect current game progress and test the actual restore separately.
+
+The [checked native-save adapter](NATIVE-SAVE-CAPTURE.md) adds explicit device identity, APK/game-data pins and idle/source checks for the tested Zelda and Diablo native slots. It uses this same format and preserves the no-live-restore boundary.
 
 ## Capture
 

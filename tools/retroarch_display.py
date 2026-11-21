@@ -176,7 +176,7 @@ def _sync(directory):
 
 
 def _read(path, limit=LIMIT):
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size > limit:
@@ -209,6 +209,8 @@ def _checkpoint(stage):
 
 
 class Store:
+    marker = MARKER
+
     def __init__(self, root):
         path = Path(root).absolute()
         if path.is_symlink():
@@ -216,7 +218,7 @@ class Store:
         self.root = path.resolve()
         self._private_location(self.root)
         marker = decode_json(_read(self._path('workspace.json'), 32768))
-        if type(marker) is not dict or type(marker.get('schema')) is not int or marker != MARKER:
+        if type(marker) is not dict or type(marker.get('schema')) is not int or marker != self.marker:
             raise DisplayError('Not a managed display workspace')
 
     @staticmethod
@@ -232,7 +234,7 @@ class Store:
             raise DisplayError('Workspace must be a new directory; existing profiles are protected')
         cls._private_location(path.resolve())
         path.mkdir(mode=0o700, parents=False)
-        _atomic(path / 'workspace.json', _json(MARKER))
+        _atomic(path / 'workspace.json', _json(cls.marker))
         _atomic(path / 'lock', b'')
         return cls(path)
 

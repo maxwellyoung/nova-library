@@ -70,8 +70,8 @@ class PcApplyTests(unittest.TestCase):
         harness.write_text('''import org.pegasus_frontend.android.PcLaunchContract;
 public class PcContractTest {
  public static void main(String[] a) {
-  if (!PcLaunchContract.supported("droiddeck","0.7.0") || !PcLaunchContract.supported("gamenative","1.4.0"))throw new AssertionError();
-  for(String bad:new String[]{"","0.7.1","0.7.0-beta","0.7.0\\n","1.4.0"})if(PcLaunchContract.supported("droiddeck",bad))throw new AssertionError();
+  if (!PcLaunchContract.supported("droiddeck","0.7.0") || !PcLaunchContract.supported("droiddeck","0.7.1") || !PcLaunchContract.supported("gamenative","1.4.0"))throw new AssertionError();
+  for(String bad:new String[]{"","0.7.2","0.7.1-beta","0.7.0-beta","0.7.0\\n","1.4.0"})if(PcLaunchContract.supported("droiddeck",bad))throw new AssertionError();
   for(String bad:new String[]{"other","../game","DROIDDECK","droiddeck;sh",null})if(PcLaunchContract.action(bad)!=null || PcLaunchContract.activity(bad)!=null || PcLaunchContract.packageName(bad)!=null)throw new AssertionError();
   if (!"com.droiddeck.launcher.FrontEndActivity".equals(PcLaunchContract.activity("droiddeck")))throw new AssertionError();
   if (!"app.gamenative.MainActivity".equals(PcLaunchContract.activity("gamenative")))throw new AssertionError();

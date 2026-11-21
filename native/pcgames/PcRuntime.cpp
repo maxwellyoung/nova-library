@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "PcRuntime.h"
 #include <QRegularExpression>
+#include <QStringList>
 #ifdef Q_OS_ANDROID
 #include <QAndroidJniObject>
 #include <QAndroidJniEnvironment>
@@ -10,8 +11,8 @@
 #endif
 namespace library {
 namespace {
-struct Backend {const char* id;const char* name;const char* package;const char* version;};
-const Backend backends[]={{"droiddeck","DroidDeck","com.droiddeck.launcher","0.7.0"},{"gamenative","GameNative","app.gamenative","1.4.0"}};
+struct Backend {const char* id;const char* name;const char* package;QStringList versions;};
+const Backend backends[]={{"droiddeck","DroidDeck","com.droiddeck.launcher",{"0.7.0","0.7.1"}},{"gamenative","GameNative","app.gamenative",{"1.4.0"}}};
 QVariantMap result(bool accepted,const QString& code,const QString& message) {return {{"accepted",accepted},{"code",code},{"message",message}};}
 PcRuntimePlatform platform() {
     PcRuntimePlatform p;
@@ -54,7 +55,7 @@ void PcRuntime::refresh() {
         auto version=item["version"].toString();
         if(version.size()>80 || !QRegularExpression("\\A[A-Za-z0-9.+_-]*\\z").match(version).hasMatch())version.clear();
         const bool available=count==1 && item["available"].type()==QVariant::Bool && item["available"].toBool();
-        const bool supported=available && version==backend.version;
+        const bool supported=available && backend.versions.contains(version);
         states.append(QVariantMap{{"id",backend.id},{"name",backend.name},{"packageName",backend.package},{"version",version},
             {"available",available},{"supported",supported},{"reason",!available?"App unavailable or access could not be checked.":!supported?"This app version needs an adapter check.":"Launch protocol checked in source; game installation and boot are not checked."}});
     }

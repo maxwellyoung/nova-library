@@ -4,6 +4,22 @@ Item {
     id: panel
     objectName: "cloudLibrary"
     property var cloud: null
+    property var preparePlay: null
+    property var failureBridge: null
+    readonly property var reviewableFailure: failureContext(current)
+    signal reviewFailure(string editionId, string attempt)
+    function failureContext(game) {
+        var revision=failureBridge ? failureBridge.revision : 0;
+        if(!cloud || cloud.busy || !game || !failureBridge || typeof failureBridge.cloudPlayAvailable!=="function")return null;
+        var result=cloud.playFailure;
+        if(!result || result.id!==game.id || result.editionId!==(game.editionId||""))return null;
+        try{return failureBridge.cloudPlayAvailable(result.editionId,result.attempt)?result:null;}catch(error){return null;}
+    }
+    function reviewPlayFailure() {
+        var result=failureContext(current);if(result)reviewFailure(result.editionId,result.attempt);
+    }
+    property var playAttempt: null
+    property bool callingPlay: false
     property var keyMap: null
     property int targetId: 0
     readonly property string kAccept: Lib.keyLabel(keyMap ? keyMap.accept : null,"A")
@@ -19,6 +35,8 @@ Item {
     property real scale: Math.max(0.5, Math.min(width / 1280, height / 800))
     property int selected: 0
     property bool queueOpen: false
+    property bool reviewOpen: false
+    readonly property bool reviewAvailable: !!(cloud && cloud.reviewVersion === 1 && typeof cloud.inspectDownload === "function" && typeof cloud.downloadReview === "function")
     readonly property bool queueAvailable: !!(cloud && cloud.queueVersion === 1 && typeof cloud.enqueueDownload === "function" && typeof cloud.startDownloads === "function")
     readonly property bool currentQueued: { var jobs=queueAvailable ? cloud.downloads || [] : [];return !!current && jobs.some(function(job){return job.id===current.id;}); }
     property bool confirmRemove: false
@@ -48,10 +66,21 @@ Item {
     signal closed()
     function px(n) { return Math.round(n * scale); }
     function fs(n) { return Math.round(n * scale * textScale); }
+    function samePlayGame(job,attempt) {
+        return !!job && !!attempt && job.id===attempt.id && (job.editionId||"")===attempt.editionId;
+    }
+    function abandonPlay() {
+        var attempt=playAttempt;playAttempt=null;
+        // Leaving this game cancels its pending check, never a running game or download.
+        if(attempt && attempt.bridge && attempt.bridge.busy && attempt.bridge.launchChecking && typeof attempt.bridge.cancel==="function")attempt.bridge.cancel();
+    }
+    function finishPlay() {
+        if(playAttempt && !callingPlay && (!playAttempt.bridge || !playAttempt.bridge.busy))playAttempt=null;
+    }
     function spaceText() {
         if (!current || current.installed) return "";
         if (recoveryBlocked) return "Retained files need review. Nothing will be replaced.";
-        if (busy) return "Downloading to selected storage; interrupted bytes are retained.";
+        if (busy) return cloud && cloud.inspectingDownload === true ? "Checking file details; no game files are downloading." : "Downloading to selected storage; interrupted bytes are retained.";
         if (!spacePlan.spaceKnown) return spacePlan.reason || "Space is checked before downloading.";
         return (spaceBlocked ? "Free " + Lib.bytesText(spacePlan.shortfallBytes) + " more · " : "")
             + (spacePlan.retainedBytes > 0 ? Lib.bytesText(spacePlan.retainedBytes) + " retained · " : "")
@@ -77,6 +106,7 @@ Item {
         removalPreview=plan;removalTarget=highlighted;removalNotice="";confirmRemove=true;
     }
     function goBack() {
+        if(reviewOpen){reviewOpen=false;return;}
         if(queueOpen){queueOpen=false;return;}
         if(confirmRemove)clearRemoval();
         else if(cleanupOpen){cleanupOpen=false;removalNotice="";}
@@ -84,6 +114,9 @@ Item {
     }
     function primary() {
         if (!cloud || setupRequired) return;
+        if(reviewAvailable && !cleanupOpen && !confirmRemove && current && !current.installed && !currentQueued && current.supported) {
+            clearRemoval();reviewOpen=true;reviewView.begin(current.id);return;
+        }
         if(queueAvailable && !cleanupOpen && !confirmRemove && current && !current.installed && current.supported && !recoveryBlocked && !spaceBlocked) {
             if(currentQueued){queueOpen=true;return;}
             if(cloud.enqueueDownload(current.id) && !busy)cloud.startDownloads(current.id);
@@ -91,24 +124,43 @@ Item {
         }
         if(busy)return;
         if (confirmRemove && removalTarget && removalPreview) {
-            cloud.removeDownload(removalTarget.id,removalPreview.token);clearRemoval();
+            var removalBridge=cloud,id=removalTarget.id,token=removalPreview.token;
+            clearRemoval();removalBridge.removeDownload(id,token);
+            if(cloud!==removalBridge)return;
+            var result=removalBridge.message;
             if(cleanupOpen)openCleanup();
+            removalNotice=result || "Review the download before trying again.";
         } else if(cleanupOpen)reviewRemoval();
-        else if (current && current.installed) cloud.play(current.id);
+        else if (current && current.installed) {
+            var bridge=cloud,job=selected>=0 && selected<games.length ? games[selected] : null;
+            if(!job || !job.installed || bridge.busy)return;
+            if (typeof preparePlay === "function" && preparePlay() !== true) {
+                removalNotice="Return position could not be saved. Nothing was launched.";
+                return;
+            }
+            var selectedJob=selected>=0 && selected<games.length ? games[selected] : null;
+            if(cloud!==bridge || bridge.busy || !selectedJob || !selectedJob.installed || selectedJob.id!==job.id || (selectedJob.editionId||"")!==(job.editionId||""))return;
+            removalNotice="";
+            if(typeof bridge.launchChecking==="boolean" && typeof bridge.cancel==="function")
+                playAttempt={bridge:bridge,id:job.id,editionId:job.editionId||""};
+            callingPlay=true;bridge.play(job.id);callingPlay=false;finishPlay();
+        }
         else if (current && current.supported && !spaceBlocked && !recoveryBlocked) cloud.install(current.id);
     }
     function handleKey(event) {
         if (!keyMap) return;
+        if(reviewOpen){reviewView.handleKey(event);return;}
         if(queueOpen){queueView.handleKey(event);return;}
         event.accepted = true;
         if(queueAvailable && typeof keyMap.isNextPage === "function" && keyMap.isNextPage(event)){queueOpen=true;clearRemoval();return;}
+        if(typeof keyMap.isPrevPage==="function" && keyMap.isPrevPage(event)){if(!event.isAutoRepeat)reviewPlayFailure();return;}
         if (keyMap.isCancel(event)) goBack();
         else if (keyMap.isUp(event) || keyMap.isDown(event)) {
             var step=keyMap.isUp(event)?-1:1;
             if(cleanupOpen)cleanupIndex=Math.max(0,Math.min(cleanupCandidates.length-1,cleanupIndex+step));
             else selected=Math.max(0,Math.min(games.length-1,selected+step));
             clearRemoval();removalNotice="";
-        } else if (keyMap.isAccept(event)) primary();
+        } else if (keyMap.isAccept(event)) {if(!event.isAutoRepeat)primary();}
         else if (keyMap.isDetails(event) && cloud && !setupRequired) {
             clearRemoval();removalNotice="";
             if (busy) cloud.cancel(); else if(cleanupOpen)openCleanup();else cloud.refresh();
@@ -117,28 +169,52 @@ Item {
         }
     }
     onCurrentChanged: {
+        if(playAttempt && !samePlayGame(current,playAttempt))abandonPlay();
         var identity=current ? current.id : 0;
         if(identity !== selectedIdentity) { clearRemoval();cleanupOpen=false;removalNotice="";selectedIdentity=identity; }
         if(visible && !cleanupOpen && cloud && current && typeof cloud.requestCover === "function") cloud.requestCover(current.id);
     }
     onVisibleChanged: {
-        if(!visible){queueOpen=false;clearRemoval();cleanupOpen=false;removalNotice="";}
+        if(!visible){abandonPlay();queueOpen=false;reviewOpen=false;clearRemoval();cleanupOpen=false;removalNotice="";}
         else if(cloud && current && typeof cloud.requestCover === "function")cloud.requestCover(current.id);
     }
     onGamesChanged: selected = Math.max(0, Math.min(selected, games.length - 1))
-    onTargetIdChanged: {selected=0;clearRemoval();cleanupOpen=false;removalNotice="";}
+    onTargetIdChanged: {abandonPlay();selected=0;reviewOpen=false;clearRemoval();cleanupOpen=false;removalNotice="";}
+    onCloudChanged:{abandonPlay();clearRemoval();cleanupOpen=false;removalNotice="";}
+    onQueueOpenChanged:if(queueOpen)abandonPlay()
+    onReviewOpenChanged:if(reviewOpen)abandonPlay()
+    onCleanupOpenChanged:if(cleanupOpen)abandonPlay()
+    onClosed:abandonPlay()
+    Component.onDestruction:abandonPlay()
+    Connections {
+        target:panel.cloud
+        ignoreUnknownSignals:true
+        function onChanged(){panel.finishPlay();}
+    }
     Item {
-    anchors.fill:parent;visible:!panel.queueOpen
+    anchors.fill:parent;visible:!panel.queueOpen && !panel.reviewOpen
     Rectangle { anchors.fill: parent; color: panel.ground }
-    Text { textFormat: Text.PlainText; x: px(64); y: px(64); text: cleanupOpen ? "Make room for " + (current ? current.title : "a game") : targetId ? "Download details" : "Cloud library"; width: parent.width-px(queueAvailable && !cleanupOpen ? 360 : 128); elide: Text.ElideRight; color: ink; font.family: fontFamily; font.pixelSize: fs(40); font.weight: Font.DemiBold }
-    Item {
-        visible:queueAvailable && !cleanupOpen;x:parent.width-width-px(64);y:px(76);width:downloadsHint.implicitWidth;height:px(34)
+    Text { textFormat: Text.PlainText; x: px(64); y: px(64); text: cleanupOpen ? "Make room for " + (current ? current.title : "a game") : targetId ? "Download details" : "Cloud library"; width: parent.width-cloudActions.width-px(128); elide: Text.ElideRight; color: ink; font.family: fontFamily; font.pixelSize: fs(40); font.weight: Font.DemiBold }
+    Row {
+        id:cloudActions;x:parent.width-width-px(64);y:px(76);spacing:px(24)
+        Item {
+            visible:!!panel.reviewableFailure && !panel.cleanupOpen
+            width:visible?failureHint.implicitWidth:0;height:px(34)
+            Row {id:failureHint;spacing:px(10)
+                KeyCap {label:Lib.keyLabel(keyMap?keyMap.prevPage:null,"L1");ink:panel.ink;ground:panel.ground;fontFamily:panel.fontFamily;textSize:panel.fs(21)}
+                Text {text:"Review failure";color:panel.ink;font.family:panel.fontFamily;font.pixelSize:panel.fs(24)}
+            }
+            MouseArea {objectName:"cloudReviewFailure";anchors.fill:parent;anchors.margins:-panel.px(10);onClicked:panel.reviewPlayFailure()}
+        }
+        Item {
+        visible:queueAvailable && !cleanupOpen;width:downloadsHint.implicitWidth;height:px(34)
         Row {
             id:downloadsHint;spacing:px(10)
             KeyCap {label:Lib.keyLabel(keyMap?keyMap.nextPage:null,"R1");ink:panel.ink;ground:panel.ground;fontFamily:panel.fontFamily;textSize:panel.fs(21)}
             Text {text:"Downloads";color:panel.ink;font.family:panel.fontFamily;font.pixelSize:panel.fs(24)}
         }
         MouseArea {anchors.fill:parent;anchors.margins:-panel.px(10);onClicked:{queueOpen=true;clearRemoval();}}
+    }
     }
     Text { textFormat: Text.PlainText; x: px(64); y: px(122); width: parent.width-px(128); text: cleanupOpen ? "Cloud-managed downloads only. Save folders are not cleanup targets." : setupRequired ? "Your local library is available while Cloud is disconnected." : "Download here. Play offline. Keep your saves."; color: quiet; font.family: fontFamily; font.pixelSize: fs(22) }
     Text { textFormat: Text.PlainText; x: px(64); y: px(152); width: parent.width-px(128); text: spaceText(); color: quiet; font.family: fontFamily; font.pixelSize: fs(18); elide: Text.ElideRight }
@@ -171,7 +247,7 @@ Item {
     }
     Text { textFormat: Text.PlainText;
         x: px(64); y: px(204); width: parent.width-px(128); visible: !visibleGames.length
-        text: cleanupOpen ? "No other managed downloads to review. Other ROM folders and app data are outside this cleanup." : setupRequired ? setupText : cloud.message
+        text: cleanupOpen ? "No other managed downloads to review. Other ROM folders and app data are outside this cleanup." : setupRequired ? setupText : cloud ? cloud.message : ""
         color: quiet; wrapMode: Text.WordWrap; font.family: fontFamily; font.pixelSize: fs(27)
     }
     Rectangle {
@@ -190,7 +266,7 @@ Item {
         objectName:"cloudHints"
         x: px(64); y: parent.height-px(76); spacing: px(30)
         Repeater {
-            model: [{key:kAccept,label:confirmRemove ? "Confirm removal" : cleanupOpen ? highlighted && highlighted.eligible ? "Review" : "Why protected" : current && current.installed ? "Play" : currentQueued ? "Downloads" : busy && queueAvailable ? "Queue" : current && current.resumeAvailable ? "Resume" : current && current.partial ? "Check download" : "Download",action:"primary",enabled:!setupRequired && (!busy || queueAvailable && !cleanupOpen && current && !current.installed) && (confirmRemove || cleanupOpen && highlighted || current && (current.installed || current.supported && !spaceBlocked && !recoveryBlocked))},
+            model: [{key:kAccept,label:confirmRemove ? "Confirm removal" : cleanupOpen ? highlighted && highlighted.eligible ? "Review" : "Why protected" : current && current.installed ? "Play" : currentQueued ? "Downloads" : reviewAvailable ? "Review download" : busy && queueAvailable ? "Queue" : current && current.resumeAvailable ? "Resume" : current && current.partial ? "Check download" : "Download",action:"primary",enabled:!setupRequired && (!cleanupOpen || !!highlighted) && (!busy || queueAvailable && !cleanupOpen && current && !current.installed) && (confirmRemove || cleanupOpen && highlighted || current && (current.installed || current.supported && (reviewAvailable || !spaceBlocked && !recoveryBlocked)))},
                 {key:kDetails,label:busy ? "Pause" : "Refresh",action:"refresh",enabled:cloud !== null && !setupRequired},
                 {key:kFilters,label:current && (current.installed || current.partial) ? "Review removal" : "Make room",action:"remove",enabled:!cleanupOpen && current && !busy && cloud && typeof cloud.removalPlan === "function"},
                 {key:kCancel,label:"Back",action:"back",enabled:true}]
@@ -214,8 +290,33 @@ Item {
     }
     DownloadQueue {
         id:queueView;anchors.fill:parent;visible:panel.queueOpen
+        preparePlay:panel.preparePlay
+        failureForGame:function(game){return panel.failureContext(game);}
+        onReviewFailure:panel.reviewFailure(editionId,attempt)
         cloud:panel.cloud;keyMap:panel.keyMap;ground:panel.ground;ink:panel.ink;slab:panel.slab;quiet:panel.quiet
         textScale:panel.textScale;fontFamily:panel.fontFamily
         onClosed:panel.queueOpen=false
+    }
+    DownloadReview {
+        id:reviewView;anchors.fill:parent;visible:panel.reviewOpen
+        cloud:panel.cloud;keyMap:panel.keyMap;ground:panel.ground;ink:panel.ink;quiet:panel.quiet
+        textScale:panel.textScale;fontFamily:panel.fontFamily;queueAvailable:panel.queueAvailable
+        onClosed:panel.reviewOpen=false
+        onConfirmed:{
+            // Compare at the mutation boundary as well as in the review's UI.
+            if(!cloud || typeof cloud.downloadReview!=="function"){reviewView.refuseCurrentPlan("Downloads are unavailable. Nothing was downloaded.");return;}
+            var plan=cloud.downloadReview(gameId);
+            if(plan.id!==gameId || plan.editionId!==editionId){reviewView.refuseCurrentPlan("The cloud copy changed. Review its new files before downloading.");return;}
+            if(!plan.detailsKnown || !plan.supported || plan.installed || plan.blocked || !plan.spaceKnown || !plan.fits){reviewView.refuseCurrentPlan(plan.reason || "Download conditions changed. Nothing was downloaded.");return;}
+            if(queueAvailable){
+                if(!cloud.enqueueDownload(gameId)){reviewView.actionError=cloud.queueMessage || "Could not add this game to Downloads. Files were kept.";return;}
+                if(!busy)cloud.startDownloads(gameId);
+                queueOpen=true;
+                var index=(cloud.downloads || []).map(function(job){return job.id;}).indexOf(gameId);
+                queueView.select(index>=0?index:0);
+            }
+            else {if(cloud.busy){reviewView.refuseCurrentPlan("Another operation started. Nothing was downloaded.");return;}cloud.install(gameId);}
+            panel.reviewOpen=false;
+        }
     }
 }

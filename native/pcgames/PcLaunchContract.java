@@ -18,7 +18,7 @@ public final class PcLaunchContract {
         String name=packageName(id);return name==null?null:name+".LAUNCH_GAME";
     }
     public static boolean supported(String id,String version) {
-        return "droiddeck".equals(id) && "0.7.0".equals(version)
+        return "droiddeck".equals(id) && ("0.7.0".equals(version) || "0.7.1".equals(version))
             || "gamenative".equals(id) && "1.4.0".equals(version);
     }
 }

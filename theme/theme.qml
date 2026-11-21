@@ -5,6 +5,10 @@ import "Owner.js" as Owner
 import "Guides.js" as Guides
 import "Compatibility.js" as Compatibility
 import "PcGames.js" as PC
+import "SaveCopies.js" as Copies
+import "Rotation.js" as Rotation
+import "Discovery.js" as Discovery
+import "InputProfiles.js" as InputProfiles
 
 // Personal Library: Home is a shelf, Library is an index, Threads holds kept groups and
 // explained suggestions. Covers carry the colour; focus is light, size and a plain edge.
@@ -13,6 +17,28 @@ import "PcGames.js" as PC
 FocusScope {
     id: root
     focus: true
+    property var cloudCaptureStage: null
+    readonly property var saveCopiesBridge: Copies.bridge(typeof saveCopies !== "undefined" ? saveCopies : null)
+    readonly property var failureBridge: {
+        if(typeof failureReports === "undefined" || !failureReports || typeof failureReports.capabilities!=="function")return null;
+        try{var c=failureReports.capabilities();return c.schemaVersion===1 && c.privatePreview===true && c.sendAvailable===false?failureReports:null;}catch(error){return null;}
+    }
+    property var failurePreviewData: ({})
+    property string failureReturn: "savecopies"
+    property string documentNotice: ""
+    property var saveCopiesData: ({ok:true,copies:[]})
+    property var saveCopyResults: ({})
+    property string saveCopyEdition: ""
+    property string saveCopyTitle: ""
+    property string saveCopyToken: ""
+    property string saveCopyChecking: ""
+    property string saveCopyPictureSource: ""
+    property var saveCopyPictureRow: null
+    onOverlayChanged: {
+        if(documentNotice!=="")documentNotice="";
+        if(overlay!=="copypicture" && saveCopyPictureSource!=="")clearSaveCopyPicture();
+        if(overlay!=="failurepreview" && failurePreviewData.ticket)clearFailurePreview();
+    }
 
     // ---------- scale, type, surface ----------
 
@@ -53,6 +79,13 @@ FocusScope {
     property int appIndex: 0
     property string appsReturnView: "home"
     property var pins: []
+    property bool pinsReadable: true
+    property var choiceData: ({total:0,offset:0,nextOffset:0,choices:[]})
+    property int choiceIndex: 0
+    property var rotation: Rotation.store(undefined)
+    property var shelves: Discovery.store(undefined)
+    property string shelfEditId: ""
+    property var shelfDraftEntry: null
     property var pcChoices: PC.freshChoices()
     property string pcTargetId: ""
     property string pcNotice: ""
@@ -104,6 +137,8 @@ FocusScope {
     property int personalRev: 0
     property string notice: ""
     property var health: null         // the Mac's last check of this Nova, from health.json
+    property string storageVolumeId: "internal-data"
+    readonly property var storageObservation: Lib.capacityEvidence(rawEntries,storageVolumeId)
 
     property string view: "home"      // home | library | consoles | threads
     property string zone: "content"   // content | nav | search
@@ -114,10 +149,15 @@ FocusScope {
     property int panelIndex: 0
     property int settingsIndex: 0
     property var discTarget: null
+    property var discHelpEntry: null
+    property int discHelpIndex: 0
+    property string discHelpParent: ""
     property int detailAction: 0
     property var checkDetail: null
+    property string checkDetailReturn: "checks"
     property int homeIndex: 0
     property int libIndex: 0
+    readonly property int searchLimit: 512
     property string searchText: ""
     property bool editingSearch: false
     property string textMode: ""      // checkpoint | thread-name
@@ -167,29 +207,90 @@ FocusScope {
 
     // ---------- memory ----------
 
+    function clearCloudCaptureStage() {
+        var staged=cloudCaptureStage;cloudCaptureStage=null;
+        if(!staged)return;
+        try{if(staged.bridge && typeof staged.bridge.cancelRomLaunch==="function")staged.bridge.cancelRomLaunch(staged.token);}catch(error){}
+    }
+    function stageCloudCapture(edition,title,platform) {
+        clearCloudCaptureStage();
+        // Older bridges cannot cancel only this request's stage.
+        var recorder=bridge,token;
+        try{
+            if(!recorder || typeof recorder.beginRomLaunch!=="function" || typeof recorder.cancelRomLaunch!=="function")return;
+            token=recorder.beginRomLaunch(edition,title,platform);
+        }catch(error){return;}
+        if(typeof token==="string" && /^[a-f0-9]{32}$/.test(token)){
+            cloudCaptureStage={bridge:recorder,token:token};
+            if(bridge!==recorder)clearCloudCaptureStage();
+        }
+    }
+    onCloudBridgeChanged:clearCloudCaptureStage()
+    onBridgeChanged:clearCloudCaptureStage()
+
     function memGet(key, fallback) {
         return api.memory.has(key) ? api.memory.get(key) : fallback;
     }
 
+    function checkedMemoryAvailable() {
+        return api.memory && typeof api.memory.checkedRead==="function" && typeof api.memory.checkedSet==="function";
+    }
+    function readPreference(key) {
+        if(!checkedMemoryAvailable())return memGet(key,undefined);
+        var value=api.memory.checkedRead(key);
+        if(!value || value.ok!==true || typeof value.exists!=="boolean")throw new Error("Preferences unavailable");
+        return value.exists?value.value:undefined;
+    }
+    function writeMemory(key,value) {
+        if(checkedMemoryAvailable()) {
+            if(api.memory.checkedSet(key,value)!==true)throw new Error("Preference commit refused");
+        } else api.memory.set(key,value);
+    }
+    function profileSetup(e) {
+        e=noteEdition(e);
+        return InputProfiles.setup(e,PC.choice(e,pcChoices),Compatibility.view(e,now).recipe);
+    }
+    function openInputProfile() {
+        var e=noteEdition(current),key=profileSetup(e);
+        if(!checkedMemoryAvailable() || !key)return;
+        notice="";overlay="inputprofile";
+        inputProfilePanel.open(api.memory,key,Lib.displayTitle(e));
+        root.forceActiveFocus();
+    }
+
     function saveFocus() {
         var f = memGet("focus", {}) || {};
-        var out = { home: f.home || "", library: f.library || "", thread: f.thread || "", console: f.console || "", app: f.app || "", consoleBrowse: fromConsole };
+        var out = { view: view, home: f.home || "", library: f.library || "", thread: f.thread || "", console: f.console || "", app: f.app || "", consoleBrowse: fromConsole };
         if (consoleSystems.length && consoleSystems[consoleIndex]) out.console = consoleSystems[consoleIndex].id;
         if (homeCurrent) out.home = homeCurrent.id;
         if (libCurrent) out.library = libCurrent.id;
         if (currentThread) out.thread = currentThread.id;
+        out.threadMember = threadMember ? threadMember.id : "";
+        out.threadZone = threadZone;
         if (appCurrent) out.app = appCurrent.id;
-        api.memory.set("focus", out);
-        api.memory.set("view", view);
+        out.libraryState = { filters: filters, sort: sortMode, consoleSystem: consoleFilter, search: searchText };
+        // Keep the view and identities in one acknowledged file commit.
+        try { writeMemory("focus", out); return true; }
+        catch (error) { return false; }
+    }
+
+    function prepareLaunch() {
+        saveTimer.stop();
+        try { if (saveFocus()) return true; } catch (error) {}
+        say("Return position could not be saved. Nothing was launched.");
+        return false;
     }
 
     function saveLibraryPrefs() {
-        api.memory.set("library", { filters: filters, sort: sortMode, consoleSystem: consoleFilter });
+        if (!ready) return true;
+        var saved = saveFocus();
+        if (!saved) say("Library view preferences could not be saved.");
+        return saved;
     }
 
     Timer { id: cardTimer; interval: 0; onTriggered: { root.loadStoppingCard(root.current); if(root.homeCurrent && root.homeCurrent!==root.current)root.loadStoppingCard(root.homeCurrent); } }
     onHomeCurrentChanged: if(ready)cardTimer.restart()
-    Timer { id: saveTimer; interval: 700; onTriggered: root.saveFocus() }
+    Timer { id: saveTimer; interval: 700; onTriggered: { if (!root.saveFocus()) root.say("Return position could not be saved."); } }
     // Android can leave the soft keyboard up when hide() lands while the field
     // still owns focus or the IME is finishing its Enter. Ask again once settled.
     Timer {
@@ -264,6 +365,28 @@ FocusScope {
         homeIndex = Math.max(0, idx);
     }
 
+    function rotationChoiceIds() { return rotation ? rotation.editions.map(function(e){return e.id;}) : []; }
+    function refreshChoices(offset) {
+        choiceData=Lib.threeChoices(rawEntries,pins,rotationChoiceIds(),Owner.rightNow,offset);
+        panelIndex=0;
+    }
+    function openChoices() { refreshChoices(0);openPanel("choices",0); }
+    function choiceRows() {
+        var rows=choiceData.choices.map(function(p){return {label:Lib.displayTitle(p.entry),value:p.reason,choice:p.key};});
+        if(!rows.length)rows.push({label:"No local games available",value:"Check Library",dim:true});
+        return rows.concat([{label:"Refresh choices",value:choiceData.total+" available",refresh:true},{label:"Pass for now",value:"Home",pass:true}]);
+    }
+    function activateChoice(i) {
+        var row=choiceRows()[i];if(!row)return;
+        if(row.pass){closeOverlay();return;}
+        if(row.refresh){refreshChoices(choiceData.nextOffset);return;}
+        if(!row.choice)return;
+        var fresh=Lib.choicePool(rawEntries,pins,rotationChoiceIds(),Owner.rightNow),selected=null;
+        fresh.forEach(function(p){if(p.key===row.choice)selected=p;});
+        if(!selected){refreshChoices(choiceData.offset);say("This choice is no longer available. Nothing was launched.");return;}
+        choiceIndex=i;panelIndex=i;play(selected.entry);
+    }
+
     function rebuildLibrary(keepId) {
         var previous = libraryEntries;
         var out = Lib.sortEntries(Lib.filterEntries(Lib.groupEntries(rawEntries), filters, pins, searchText), sortMode);
@@ -273,7 +396,7 @@ FocusScope {
 
     function rebuildThreads(keepId) {
         var memberId = threadMember ? threadMember.id : "";
-        var out = Lib.buildThreads(rawEntries, device);
+        var out = [Rotation.collection(rotation,rawEntries)].concat(Discovery.collections(shelves,rawEntries), Lib.buildThreads(rawEntries, device));
         threads = out;
         var idx = Lib.indexOfId(out, keepId);
         // A suggestion that was just kept comes back under a new id; stay on it.
@@ -328,17 +451,21 @@ FocusScope {
     }
     Connections {
         target:root.cloudBridge;ignoreUnknownSignals:true
-        function onChanged() { if(root.ready && root.integratedCloud)cloudModelTimer.restart(); }
+        function onChanged() {
+            if(root.cloudCaptureStage && (!root.cloudBridge || !root.cloudBridge.busy))root.clearCloudCaptureStage();
+            if(root.ready && root.integratedCloud)cloudModelTimer.restart();
+        }
         function onLaunchPrepared(edition,title,platform) {
-            if(root.bridge && typeof root.bridge.recordRomLaunch === "function") {
-                try {root.bridge.recordRomLaunch(edition,title,platform);}
-                catch(error) {console.log("NOVA_LIBRARY cloud ROM history staging unavailable");}
-            }
+            root.stageCloudCapture(edition,title,platform);
         }
         function onLaunchAccepted(edition) {
+            // The platform consumed the stage before accepting this request.
+            root.cloudCaptureStage=null;
             var store=root.cloudHistoryReadable ? Lib.rememberCloudOpening({version:1,opened:root.cloudOpened},edition,Date.now()) : null;
-            if(store) {root.cloudOpened=store.opened;api.memory.set("cloudOpened",store);}
-            else root.say("Couldn't add this opening to recents. Existing history was kept.");
+            if(store) {
+                try { root.writeMemory("cloudOpened",store);root.cloudOpened=store.opened; }
+                catch(error) { root.say("Couldn't add this opening to recents. Existing history was kept."); }
+            } else root.say("Couldn't add this opening to recents. Existing history was kept.");
             if(root.overlay==="cloud")root.closeCloud();
             root.cloudModelSignature="";cloudModelTimer.restart();
         }
@@ -475,7 +602,12 @@ FocusScope {
             api.memory.unset("launchProbe");
 
         loadPcChoices();
-        var storedPins = memGet("pins", []);
+        loadRotation();
+        loadShelves();
+        var storedPins;
+        try { storedPins=readPreference("pins"); }
+        catch(error) { pinsReadable=false; }
+        if(storedPins!==undefined && (!Array.isArray(storedPins) || storedPins.some(function(id){return typeof id!=="string";})))pinsReadable=false;
         var cleanPins = [];
         if (storedPins && storedPins.length !== undefined)
             for (var i = 0; i < storedPins.length; i++)
@@ -491,7 +623,8 @@ FocusScope {
             motion: t.motion !== false
         };
 
-        var v = memGet("view", "home");
+        var savedFocus = memGet("focus", {}) || {};
+        var v = typeof savedFocus.view === "string" ? savedFocus.view : memGet("view", "home");
         view = views.indexOf(v) !== -1 ? v : "home";
 
         if (bridge && typeof bridge.read === "function") {
@@ -499,13 +632,17 @@ FocusScope {
             catch (err) { console.log("NOVA_LIBRARY bridge read failed: " + err); device = null; }
         }
 
-        sessions = Lib.sessionStore(memGet("sessionWindows", null));
-        var savedCloud=Lib.cloudHistoryStore(memGet("cloudOpened",null),Date.now());
+        try { sessions=Lib.sessionStore(readPreference("sessionWindows")); }
+        catch(error) { sessions=null; }
+        var savedCloud;
+        try { savedCloud=Lib.cloudHistoryStore(readPreference("cloudOpened"),Date.now()); }
+        catch(error) { savedCloud=null; }
         cloudHistoryReadable=savedCloud!==null;cloudOpened=savedCloud?savedCloud.opened:{};
         rebuildAll();
 
         // Saved filters only come back if they still make sense for this catalogue.
-        var lib = memGet("library", {}) || {};
+        var lib = savedFocus.libraryState && typeof savedFocus.libraryState === "object" && !Array.isArray(savedFocus.libraryState)
+            ? savedFocus.libraryState : memGet("library", {}) || {};
         var sf = lib.filters || {};
         var systemIds = systems.map(function(x) { return x.id; });
         filters = {
@@ -517,6 +654,7 @@ FocusScope {
             session: [""].concat(Lib.SESSION_WINDOWS, ["unknown"]).indexOf(sf.session) !== -1 ? sf.session : ""
         };
         sortMode = Lib.SORTS.indexOf(lib.sort) !== -1 ? lib.sort : "alpha";
+        searchInput.text = typeof lib.search === "string" && lib.search.length <= searchLimit ? lib.search : "";
 
         var f = memGet("focus", {}) || {};
         libAnchorId = f.library || "";
@@ -532,17 +670,27 @@ FocusScope {
         }
         for (var c = 0; c < consoleSystems.length; c++)
             if (consoleSystems[c].id === f.console) consoleIndex = c;
-        rebuildHome("");
+        rebuildHome(f.home);
         rebuildLibrary(f.library);
         rebuildThreads(f.thread);
+        // Pegasus rebuilds the theme after a game exits. Restore only the same
+        // collection and exact member; a removed member returns to the list.
+        if (f.threadZone === "members" && currentThread && currentThread.id === f.thread) {
+            var restoredMember = Lib.indexOfId(currentThread.entries, f.threadMember);
+            if (restoredMember >= 0) {
+                memberIndex = restoredMember;
+                threadZone = "members";
+            }
+        }
         ready = true;
+        saveTimer.restart();
         console.log("NOVA_LIBRARY ready games=" + allEntries.length + " home=" + homeEntries.length
                     + " pins=" + pins.length + " fallback=" + homeIsFallback + " view=" + view
                     + " threads=" + threads.length + " bridge=" + (bridge ? (device ? "read" : "unreadable") : "absent"));
         logFocus();
     }
 
-    Component.onDestruction: if (ready) saveFocus()
+    Component.onDestruction: {clearFailurePreview();clearCloudCaptureStage();if (ready) saveFocus();}
 
     // ---------- actions ----------
 
@@ -627,6 +775,13 @@ FocusScope {
         playEdition(e);
     }
 
+    function openDiscHelp() {
+        if(overlay!=="discs" || !discTarget || !discTarget.discMembers[panelIndex])return;
+        discHelpEntry=discTarget.discMembers[panelIndex];
+        discHelpIndex=panelIndex;discHelpParent=overlayReturn;
+        openPanel("dischelp",0);
+    }
+
     function playEdition(e) {
         if (!e)
             return;
@@ -639,15 +794,20 @@ FocusScope {
         if(e.cloudId) {
             if(!integratedCloud)return;
             if(!e.launchable || cloudBridge.busy) {openCloud(e);return;}
-            saveTimer.stop();saveFocus();cloudBridge.play(e.cloudId);return;
+            // Keep main-view Play inside the same visible check/cancel journey.
+            openCloud(e);
+            var selectedCloud=cloudPanel.current;
+            if(!selectedCloud || selectedCloud.id!==e.cloudId || selectedCloud.editionId!==e.id || !selectedCloud.installed) {
+                say("This cloud copy changed. Review its download details before opening.");return;
+            }
+            cloudPanel.primary();return;
         }
         if (!e.launchable || e.game.missing) {
             console.log("NOVA_LIBRARY launch-skipped id=" + e.id + " reason=" + (e.game.missing ? "missing" : "no-route"));
             openDetails();
             return;
         }
-        saveTimer.stop();
-        saveFocus();
+        if (!prepareLaunch()) return;
         console.log("NOVA_LIBRARY launch id=" + e.id + " route=" + (e.route || "unlabelled") + " view=" + view);
         // The native launcher consumes this identity when launch begins.
         if (bridge && typeof bridge.recordRomLaunch === "function"
@@ -661,6 +821,7 @@ FocusScope {
     function toggleKeep(e) {
         if (!e)
             return;
+        if (!pinsReadable) { say("Saved favourites are unreadable; nothing was changed."); return; }
         var homeId = homeCurrent ? homeCurrent.id : "";
         var libId = libCurrent ? libCurrent.id : "";
         var next = pins.slice();
@@ -669,8 +830,9 @@ FocusScope {
             next.push(e.id);
         else
             next.splice(at, 1);
+        try { writeMemory("pins", next); }
+        catch(error) { say("Favourite could not be saved. Your saved choices were kept."); return; }
         pins = next;
-        api.memory.set("pins", next);
         console.log("NOVA_LIBRARY keep id=" + e.id + " " + (at === -1 ? "on" : "off"));
         // Keep works without the bridge; with it, the pin also goes into the outbox.
         if (canEdit && !e.cloudId && typeof bridge.act === "function") {
@@ -685,8 +847,9 @@ FocusScope {
     function setAppearance(key, value) {
         var a = { surface: appearance.surface, size: appearance.size, time: appearance.time, motion: appearance.motion !== false };
         a[key] = value;
+        try { writeMemory("theme", a); }
+        catch(error) { say("Appearance could not be saved. Your saved choices were kept."); return; }
         appearance = a;
-        api.memory.set("theme", a);
     }
 
     function cycleAppearance(i) {
@@ -762,18 +925,36 @@ FocusScope {
         loadStoppingCard(current,true);
         detailAction = 0;
         checkDetail = null;
+        checkDetailReturn = "checks";
         detailFlick.contentY = 0;
         overlay = "details";
     }
 
     function closeOverlay() {
+        if(overlay === "failurepreview"){clearFailurePreview();overlay=failureReturn;return;}
+        if(overlay === "copypicture"){clearSaveCopyPicture();overlay="savecopies";return;}
+        if(overlay === "inputprofile"){inputProfilePanel.back();return;}
+        if(overlay === "dischelp") {
+            overlay="discs";panelIndex=discHelpIndex;overlayReturn=discHelpParent;
+            discHelpEntry=null;return;
+        }
+        if(overlay === "rotation"){overlay="";return;}
+        if(overlay === "shelf"){overlay="";overlayReturn="";return;}
+        if(overlay === "text" && overlayReturn === "shelf"){overlay="shelf";return;}
+        if(overlay === "savecopies") {
+            if(saveCopiesBridge)saveCopiesBridge.cancelReview();
+            saveCopyToken="";saveCopyChecking="";
+            overlay=overlayReturn==="details"?"details":"";return;
+        }
         if(overlay === "pcruntime"){overlay=overlayReturn==="details"?"details":"";overlayReturn="";pcTargetId="";pcNotice="";return;}
         if(overlay === "notebook"){notebookPanel.back();return;}
         if (overlay === "facts") {
-            overlay = checkDetail ? "checks" : "details";
+            overlay = checkDetail ? checkDetailReturn : "details";
             checkDetail = null;
+            checkDetailReturn = "checks";
         } else if (overlay === "discs") {
-            overlay = overlayReturn === "details" ? "details" : "";
+            overlay = overlayReturn === "details" ? "details" : overlayReturn === "choices" ? "choices" : "";
+            if(overlay === "choices")panelIndex=choiceIndex;
             discTarget = null;
         } else if (["appearance", "storage", "controls", "refresh", "about", "phoneaudio"].indexOf(overlay) !== -1 && overlayReturn === "settings") {
             overlay = "settings";
@@ -860,6 +1041,173 @@ FocusScope {
 
     // ---------- progress and threads ----------
 
+    function rotationEntry(e) { return e && e.discMembers ? e.discEdition : e; }
+
+    function loadRotation() {
+        try {rotation=Rotation.store(readPreference("rotationV1"));}
+        catch(error){rotation=null;}
+    }
+
+    function rotationRows() {
+        return Rotation.rows(rotation,rawEntries).map(function(row){if(row.entry)row.label=Lib.displayTitle(row.entry);return row;});
+    }
+
+    function saveRotation(next) {
+        if(!rotation || !next) {say("Rotation could not be changed. Saved choices were kept.");return false;}
+        try {writeMemory("rotationV1",next);}
+        catch(error){say("Rotation could not be stored. Your previous order was kept.");return false;}
+        rotation=next;
+        rebuildThreads(currentThread?currentThread.id:"");personalRev++;
+        return true;
+    }
+
+    function toggleRotation() {
+        var e=rotationEntry(current);
+        if(!Rotation.eligible(e)){say("This edition cannot be added to the rotation.");return;}
+        var kept=Rotation.contains(rotation,e.id);
+        if(!kept && rotation && rotation.editions.length>=Rotation.LIMIT){say("Your rotation holds up to "+Rotation.LIMIT+" games. Remove one in Collections → Your rotation → Edit rotation.");return;}
+        var cached={id:e.id,title:Lib.displayTitle(e),systemId:e.systemId};
+        if(saveRotation(kept?Rotation.remove(rotation,e.id):Rotation.add(rotation,cached))) {
+            // Removing this member must not silently replace the open Details with another game.
+            if(kept && view==="threads" && currentThread && currentThread.origin==="rotation") {overlay="";threadZone="list";}
+            say(kept?"Removed from rotation. Game files were kept.":"Added to your rotation.");
+        }
+    }
+
+    function openRotationEditor() {openPanel("rotation",0);}
+
+    function editRotation(direction) {
+        var row=Rotation.rows(rotation,rawEntries)[panelIndex];if(!row || !row.id)return;
+        var next=direction===0?Rotation.remove(rotation,row.id):Rotation.move(rotation,row.id,direction);
+        if(!next)return;
+        if(saveRotation(next)) {
+            panelIndex=direction===0?Math.max(0,Math.min(panelIndex,next.editions.length-1)):panelIndex+direction;
+            say(direction===0?"Removed from rotation. Game files were kept.":"Rotation order saved.");
+        }
+    }
+
+    // ---------- your shelves (Discovery.js): owner-named, offline, edition-scoped ----------
+
+    function loadShelves() {shelves=storedShelves();}
+
+    function storedShelves() {
+        try {return Discovery.store(readPreference(Discovery.KEY));}
+        catch(error){return null;}
+    }
+
+    // The one write path. A stored value that no longer matches what this screen opened is
+    // reloaded instead of overwritten; a refused write leaves the UI and saved shelves unchanged.
+    function saveShelves(next, keepId) {
+        if(!shelves || !next){say("Shelves could not be changed. Saved shelves were kept.");return false;}
+        var stored=storedShelves();
+        if(!Discovery.same(stored,shelves)) {
+            shelves=stored;rebuildThreads(currentThread?currentThread.id:"");personalRev++;
+            say("Shelves changed since this screen opened. They were reloaded; nothing was overwritten.");return false;
+        }
+        try {writeMemory(Discovery.KEY,next);}
+        catch(error){say("Shelves could not be stored. Your previous shelves were kept.");return false;}
+        shelves=next;
+        rebuildThreads(keepId!==undefined?keepId:currentThread?currentThread.id:"");personalRev++;
+        return true;
+    }
+
+    function shelfEditionLabel(e) {
+        return e?Lib.displayTitle(e)+(current && current.discMembers?" · Disc "+current.discNumber:""):"this edition";
+    }
+
+    function toggleShelf(shelfId) {
+        var e=rotationEntry(current),s=Discovery.find(shelves,shelfId);
+        if(!s){say("Saved shelves could not be read. Nothing was changed.");return;}
+        if(!Discovery.eligible(e)){say("This edition cannot join a shelf.");return;}
+        var kept=Discovery.contains(shelves,shelfId,e.id);
+        if(!kept && s.editions.length>=Discovery.EDITION_LIMIT){say("“"+s.name+"” holds up to "+Discovery.EDITION_LIMIT+" games. Remove one in Collections → Edit shelf.");return;}
+        var cached={id:e.id,title:Lib.displayTitle(e),systemId:e.systemId};
+        if(saveShelves(kept?Discovery.remove(shelves,shelfId,e.id):Discovery.add(shelves,shelfId,cached))) {
+            // Removing this member must not silently replace the open Details with another game.
+            if(kept && view==="threads" && currentThread && currentThread.shelfId===shelfId) {overlay="";threadZone="list";}
+            say(kept?"Removed from “"+s.name+"”. Game files were kept.":"Added to “"+s.name+"”.");
+        }
+    }
+
+    function openShelfName(mode) {
+        if(!shelves){say("Saved shelves could not be read, so nothing was changed.");return;}
+        if(mode==="new" && shelves.shelves.length>=Discovery.SHELF_LIMIT){say("You can keep up to "+Discovery.SHELF_LIMIT+" shelves. Empty and delete one first.");return;}
+        var s=Discovery.find(shelves,shelfEditId);
+        if(mode==="rename" && !s)return;
+        shelfDraftEntry=mode==="new"?rotationEntry(current):null;
+        overlayReturn=mode==="new"?"details":"shelf";
+        textMode="shelf-"+mode;textTarget="";
+        textInput.text=mode==="rename"?s.name:"";
+        overlay="text";
+        beginText();
+    }
+
+    // One write makes the shelf and adds the edition it was started from.
+    function createShelf(name) {
+        var problem=Discovery.nameProblem(shelves,name,"");
+        if(problem){say(problem);return;}
+        var made=Discovery.create(shelves,name,"feeling");
+        if(!made){say("This shelf could not be made. Saved shelves were kept.");return;}
+        var e=shelfDraftEntry,next=made.state;
+        if(Discovery.eligible(e))next=Discovery.add(next,made.id,{id:e.id,title:Lib.displayTitle(e),systemId:e.systemId})||made.state;
+        var label=Discovery.find(next,made.id).name;
+        if(saveShelves(next))say("Made “"+label+"”"+(Discovery.contains(next,made.id,e?e.id:"")?" with "+Lib.displayTitle(e):"")+". Saved on this device.");
+    }
+
+    function renameShelf(name) {
+        var s=Discovery.find(shelves,shelfEditId);
+        if(!s){say("This shelf is no longer saved.");return;}
+        if(Discovery.cleanName(name)===s.name)return;
+        var problem=Discovery.nameProblem(shelves,name,s.id);
+        if(problem){say(problem);return;}
+        if(saveShelves(Discovery.rename(shelves,s.id,name),"local:"+s.id))say("Renamed to “"+Discovery.cleanName(name)+"”. Its games stayed on it.");
+    }
+
+    function openShelfEditor() {
+        if(!currentThread || currentThread.origin!=="shelf" || currentThread.unreadable)return;
+        shelfEditId=currentThread.shelfId;
+        openPanel("shelf",0);
+    }
+
+    function shelfRows() {
+        return Discovery.editorRows(shelves,shelfEditId,rawEntries).map(function(row){if(row.entry)row.label=Lib.displayTitle(row.entry);return row;});
+    }
+
+    // step 0 is the accept button; -1 / 1 are left / right on the selected row.
+    function editShelf(step) {
+        var row=shelfRows()[panelIndex],s=Discovery.find(shelves,shelfEditId);
+        if(!row || !s || !row.act)return;
+        var keep="local:"+s.id;
+        if(row.act==="rename") {if(step===0)openShelfName("rename");return;}
+        if(row.act==="kind") {
+            if(saveShelves(Discovery.cycleKind(shelves,s.id,step||1),keep))
+                say("“"+s.name+"” is now a "+Discovery.KIND_LABELS[Discovery.find(shelves,s.id).kind].toLowerCase()+" shelf.");
+            return;
+        }
+        if(row.act==="order") {
+            if(step===0){say("Left / right moves this shelf earlier or later.");return;}
+            var moved=Discovery.moveShelf(shelves,s.id,step);
+            if(moved && saveShelves(moved,keep))say("Shelf order saved.");
+            return;
+        }
+        if(row.act==="member") {
+            var next=step===0?Discovery.remove(shelves,s.id,row.id):Discovery.moveEdition(shelves,s.id,row.id,step);
+            if(!next)return;
+            if(saveShelves(next,keep)) {
+                panelIndex=step===0?Math.min(panelIndex,shelfRows().length-1):panelIndex+step;
+                say(step===0?"Removed from “"+s.name+"”. Game files were kept.":"Shelf order saved.");
+            }
+            return;
+        }
+        if(row.act==="delete" && step===0) {
+            if(s.editions.length){say("Remove its games first. A shelf with games is never deleted in one press.");return;}
+            if(saveShelves(Discovery.removeShelf(shelves,s.id),"")) {
+                overlay="";overlayReturn="";threadZone="list";shelfEditId="";
+                say("Deleted “"+s.name+"”. No games or files changed.");
+            }
+        }
+    }
+
     function keptThreads() {
         return threads.filter(function(t) { return t.origin === "kept"; });
     }
@@ -868,7 +1216,7 @@ FocusScope {
         if (sessions === null) { say("Session labels are unreadable; nothing was changed."); return; }
         var next = Lib.changeSession(sessions, current, value);
         if (!next) { say("This session label could not be changed."); return; }
-        try { api.memory.set("sessionWindows", next); }
+        try { writeMemory("sessionWindows", next); }
         catch (err) { say("Session label could not be stored."); return; }
         var editedId = current ? current.id : "";
         sessions = next;
@@ -1000,7 +1348,11 @@ FocusScope {
         } else if (textMode === "thread-name") {
             if (value)
                 createThread(value, textTarget);
-        }
+        } else if (textMode === "shelf-new") {
+            if (value)
+                createShelf(value);
+        } else if (textMode === "shelf-rename")
+            renameShelf(value);
     }
 
     // ---------- words ----------
@@ -1064,6 +1416,8 @@ FocusScope {
                 : "DroidDeck isn't configured here. Check this game in your Steam app; Library cannot install it from this entry.", q: false });
         if(PC.choice(e,pcChoices))out.push({t:PC.actionLabel(e,pcChoices)+" is a remembered app request. It does not confirm this game's installation or boot.",q:true});
         if (e.compatibilityReceipts) out.push({ t: Compatibility.summary(e, now) + ". Open Checks for the tested setup and each observation.", q: true });
+        if (Compatibility.offlineEvidence(e, now).check)
+            out.push({ t: Compatibility.offlineSummary(e, now) + ". The dated check does not verify saves, every game mode or changed settings.", q: true });
         if (e.novaGameplayNote && e.novaGameplaySource && e.novaGameplayObservedAt && Lib.dateEvidenceText(e.novaGameplayObservedAt) !== "Date unknown")
             out.push({ t: "Earlier short check on Nova · " + Lib.dateEvidenceText(e.novaGameplayObservedAt) + " · " + e.novaGameplaySource + ": " + e.novaGameplayNote, q: true });
         else if (!e.compatibilityReceipts)
@@ -1133,6 +1487,8 @@ FocusScope {
                 : display.stretchOnly ? "Stretch-only setup" : Lib.originalAspect(e) ? "Original · "+Lib.originalAspect(e)
                 : e.displayAspect && e.displayAspectSource ? "Screen · " + e.displayAspect : "Aspect not checked", q: true, icon: "aspect" });
         }
+        if (Compatibility.offlineEvidence(e, now).check)
+            out.push({ t: Compatibility.offlineSummary(e, now), q: true, icon: "info" });
         if (e.status !== "unknown") out.push({ t: Lib.STATUS_LABELS[e.status], q: false, icon: "note" });
         var card=notebookCards[e.id];
         if(card && card.ok && card.note) out.push({t:"Stopped: "+(card.note.text || "Image note"),q:false,icon:"note"});
@@ -1148,12 +1504,15 @@ FocusScope {
         var availability=Lib.availabilityText(e);
         var out = [{t:availability,q:true}];
         if (e.conflict) out.push({t:"Progress conflict · open Info",q:false});
+        if (Compatibility.offlineEvidence(e,now).check)
+            out.push({t:Compatibility.offlineSummary(e,now),q:true});
         return out.concat(overviewLines(e,rev).filter(function(line) {
-            return line.t !== "Progress conflict · open Info" && line.t !== availability;
+            return line.t !== "Progress conflict · open Info" && line.t !== availability
+                && line.t !== Compatibility.offlineSummary(e,now);
         }).slice(0,4-out.length));
     }
 
-    function loadPcChoices(){pcChoices=PC.readChoices(api.memory.has("pcRuntimeChoicesV1")?api.memory.get("pcRuntimeChoicesV1"):undefined);}
+    function loadPcChoices(){try{pcChoices=PC.readChoices(readPreference("pcRuntimeChoicesV1"));}catch(error){pcChoices=PC.readChoices(null);}}
     function pcOptionsAvailable(e) {return !!PC.steamId(e) && (!!pcBridge || !!PC.choice(e,pcChoices));}
     function pcEntry() {return entryById[pcTargetId] || null;}
     function pcRows() {
@@ -1173,12 +1532,11 @@ FocusScope {
     }
     function savePcChoice(e,value) {
         var next=PC.editChoice(pcChoices,e.id,value);if(!next)return false;
-        try{api.memory.set("pcRuntimeChoicesV1",next.value);pcChoices=next;return true;}catch(error){return false;}
+        try{writeMemory("pcRuntimeChoicesV1",next.value);pcChoices=next;return true;}catch(error){return false;}
     }
     function requestPcGame(e,runtime,version) {
         if(!pcBridge || !PC.steamId(e)){openPcOptions(e);return;}
-        saveTimer.stop();
-        try{saveFocus();}catch(error){if(overlay!=="pcruntime")openPcOptions(e);pcNotice="Library could not save its return position. Nothing was requested.";return;}
+        if(!prepareLaunch()){if(overlay!=="pcruntime")openPcOptions(e);pcNotice="Library could not save its return position. Nothing was requested.";return;}
         var response;
         try{response=pcBridge.openGame(e.id,runtime,version);}catch(error){response={accepted:false,message:"The runtime request failed. No fallback was opened."};}
         if(response && response.accepted===true){
@@ -1188,11 +1546,12 @@ FocusScope {
         } else {
             if(overlay!=="pcruntime" || pcTargetId!==e.id)openPcOptions(e);
             pcNotice=response && response.message || "The runtime could not accept this request. No fallback was opened.";
+            say(pcNotice);
         }
     }
     function activatePcRuntime(i) {
         var row=pcRows()[i],e=pcEntry();if(!row || !e)return;
-        if(!row.available){pcNotice=row.reason;return;}
+        if(!row.available){pcNotice=row.reason;say(pcNotice);return;}
         if(row.forget){if(!savePcChoice(e,null)){pcNotice="Runtime choices could not be saved. Existing preferences were kept.";return;}pcNotice="Runtime choice forgotten. Games and saves were kept.";panelIndex=0;return;}
         if(row.legacy){if(!savePcChoice(e,null)){pcNotice="The saved runtime choice could not be cleared. Nothing was opened.";return;}playEdition(e);return;}
         requestPcGame(e,row.runtime,row.version);
@@ -1228,11 +1587,12 @@ FocusScope {
         else if (Lib.isSteamGame(e) && !e.launchable && droidDeckApp()) out.push({ a: "droiddeck", l: "Open DroidDeck" });
         if (Guides.available(e)) out.push({ a: "guide", l: "Controls" });
         out.push({ a: "checks", l: "Checks" });
+        if(saveCopiesBridge)out.push({a:"savecopies",l:"Save copies"});
         out.push({ a: "facts", l: "Info" });
         out.push({ a: "keep", l: (currentPinned ? "Unfavourite" : "Favourite") + (e.discMembers ? " disc " + e.discNumber : "") });
         if (canEdit && !e.cloudId) out.push({ a: "status", l: "Status" });
         if (notebookEligible(e) && notebookBridge || canEdit && !e.cloudId) out.push({ a: "note", l: "Note" });
-        if (canEdit && !e.cloudId) out.push({ a: "thread", l: "Collections" });
+        if (Rotation.eligible(rotationEntry(e))) out.push({ a: "thread", l: "Collections" });
         if (Lib.sessionTargets(e).length) out.push({ a: "session", l: "Session length" });
         return out;
     }
@@ -1249,6 +1609,7 @@ FocusScope {
         else if (a === "pcruntime") openPcOptions(current);
         else if (a === "guide") openPanel("guide", 0);
         else if (a === "checks") openPanel("checks", 0);
+        else if (a === "savecopies") openSaveCopies();
         else if (a === "facts") { checkDetail = null; overlay = "facts"; detailFlick.contentY = 0; }
         else if (a === "keep") toggleKeep(current);
         else if (a === "session") openPanel("session", Math.max(0, ["unknown"].concat(Lib.SESSION_WINDOWS).indexOf(Lib.sessionValue(current))));
@@ -1259,8 +1620,11 @@ FocusScope {
 
     // Settings and its read-only guides reuse the existing list panel.
     function panelTitle() {
+        if(overlay === "choices")return "Three to try";
+        if(overlay === "savecopies")return saveCopyTitle+" · save copies";
         if(overlay === "pcruntime")return pcEntry()?"PC runtime · "+Lib.displayTitle(pcEntry()):"PC runtime";
         if (overlay === "discs") return discTarget ? discTarget.title + " · choose a disc" : "Choose a disc";
+        if (overlay === "dischelp") return discTarget && discHelpEntry ? discTarget.title+" · Disc "+discHelpEntry.discNumber+" · swap help" : "Disc swap help";
         if (overlay === "settings") return "Settings";
         if (overlay === "guide") return current ? current.title + " · controls" : "Controls";
         if (overlay === "checks") return current ? current.title + " · checks" : "Compatibility checks";
@@ -1274,11 +1638,79 @@ FocusScope {
         if (overlay === "session") return "Session length";
         if (overlay === "status") return "Status";
         if (overlay === "threadpick") return "Collections";
+        if (overlay === "rotation") return "Edit rotation";
+        if (overlay === "shelf") {var editing=Discovery.find(shelves,shelfEditId);return editing?"Edit “"+editing.name+"”":"Edit shelf";}
         return "";
     }
 
     function isListPanel() {
-        return ["discs", "settings", "appearance", "storage", "controls", "refresh", "filters", "session", "status", "threadpick", "guide", "checks", "about", "phoneaudio", "pcruntime"].indexOf(overlay) !== -1;
+        return ["discs", "dischelp", "settings", "appearance", "storage", "controls", "refresh", "filters", "session", "status", "threadpick", "guide", "checks", "about", "phoneaudio", "pcruntime", "savecopies", "rotation", "shelf", "choices"].indexOf(overlay) !== -1;
+    }
+
+    function openSaveCopies() {
+        var entry=current && current.discMembers ? current.discEdition : current;
+        if(!entry || !saveCopiesBridge)return;
+        saveCopyEdition=entry.id;saveCopyTitle=Lib.displayTitle(entry)+(current.discMembers?" · Disc "+current.discNumber:"");saveCopyResults={};saveCopyToken="";saveCopyChecking="";
+        try{saveCopiesData=saveCopiesBridge.openEdition(entry.id);}catch(error){saveCopiesData={ok:false,error:"storage_unavailable"};}
+        openPanel("savecopies",0);
+    }
+    function checkSaveCopy(i) {
+        var row=Copies.rows(saveCopiesData,saveCopyResults)[i];panelIndex=i;
+        if(saveCopyToken || !Copies.canReview(saveCopiesBridge,saveCopiesData,row))return;
+        saveCopyResults=Copies.withResult(saveCopyResults,row.copy.checkpointId,null);
+        var result;
+        try{result=saveCopiesBridge.reviewSnapshot(saveCopyEdition,row.copy.checkpointId,saveCopiesData.indexSha256);}catch(error){result={ok:false,error:"storage_unavailable"};}
+        if(result && result.ok===true){saveCopyToken=result.token;saveCopyChecking=row.copy.checkpointId;}
+        else saveCopyResults=Copies.withResult(saveCopyResults,row.copy.checkpointId,result || {ok:false});
+    }
+    function saveFailureContext() {
+        if(overlay!=="savecopies" || saveCopyToken || !failureBridge)return null;
+        var checkpoint="",index="";
+        if(saveCopiesData && saveCopiesData.ok===true) {
+            var row=Copies.rows(saveCopiesData,saveCopyResults)[panelIndex];
+            if(!row || !row.copy || !saveCopyResults[row.copy.checkpointId] || saveCopyResults[row.copy.checkpointId].ok!==false)return null;
+            checkpoint=row.copy.checkpointId;index=saveCopiesData.indexSha256;
+        } else if(!saveCopiesData || saveCopiesData.ok!==false)return null;
+        try{return failureBridge.available(saveCopyEdition,checkpoint,index)?{checkpoint:checkpoint,index:index}:null;}catch(error){return null;}
+    }
+    function openSaveFailure() {
+        var context=saveFailureContext();if(!context)return;
+        var result;
+        try{result=failureBridge.preview(saveCopyEdition,context.checkpoint,context.index);}catch(error){result=null;}
+        if(!result || result.ok!==true || !/^[a-f0-9]{32}$/.test(result.ticket || "") || !/^[a-f0-9]{64}$/.test(result.sha256 || "") || typeof result.text!=="string" || result.bytes>8192){say("The failure preview is unavailable. Your save copies were kept.");return;}
+        failureReturn="savecopies";failurePreviewData=result;overlay="failurepreview";
+    }
+    function openCloudFailure(edition,attempt) {
+        if(overlay!=="cloud" || !failureBridge || typeof failureBridge.previewCloudPlay!=="function")return;
+        var result;
+        try{result=failureBridge.previewCloudPlay(edition,attempt);}catch(error){result=null;}
+        if(!result || result.ok!==true || !/^[a-f0-9]{32}$/.test(result.ticket || "") || !/^[a-f0-9]{64}$/.test(result.sha256 || "") || typeof result.text!=="string" || result.bytes>8192){say("The failure preview is unavailable. Downloaded files and saves were kept.");return;}
+        failureReturn="cloud";failurePreviewData=result;overlay="failurepreview";
+    }
+    function clearFailurePreview() {
+        if(failureBridge && failurePreviewData.ticket)failureBridge.cancelPreview(failurePreviewData.ticket);
+        failurePreviewData={};
+    }
+    function openSaveCopyPicture() {
+        var row=Copies.rows(saveCopiesData,saveCopyResults)[panelIndex];
+        if(overlay!=="savecopies" || saveCopyToken || !Copies.canPicture(saveCopiesBridge,saveCopiesData,row))return;
+        var result;
+        try{result=saveCopiesBridge.picture(saveCopyEdition,row.copy.checkpointId,saveCopiesData.indexSha256);}catch(error){result=null;}
+        var source=Copies.pictureUrl(result);
+        if(!source){say(result && result.error==="history_changed"?"Save history changed. Close and reopen Save copies.":"The attached picture could not be read. Your save copy was kept.");return;}
+        saveCopyPictureRow=row.copy;saveCopyPictureSource=source;overlay="copypicture";
+    }
+    function clearSaveCopyPicture() {
+        saveCopyPictureSource="";saveCopyPictureRow=null;
+        if(saveCopiesBridge && typeof saveCopiesBridge.clearPicture==="function")saveCopiesBridge.clearPicture();
+    }
+    Connections {
+        target:root.saveCopiesBridge
+        function onReviewFinished(token,result) {
+            if(root.overlay!=="savecopies" || !root.saveCopyToken || token!==root.saveCopyToken)return;
+            root.saveCopyResults=Copies.withResult(root.saveCopyResults,root.saveCopyChecking,result);
+            root.saveCopyToken="";root.saveCopyChecking="";
+        }
     }
 
     function storageRows() {
@@ -1286,7 +1718,9 @@ FocusScope {
         function label(g) {
             return g.known ? Lib.bytesText(g.bytes) + (g.unknown ? " · " + g.unknown + " unknown" : "") : "Unknown";
         }
-        var rows = [{ label: "Known ROM files", value: label(summary), evidence: summary }];
+        var rows=[{label:"Volume",value:Lib.CAPACITY_NAMES[storageVolumeId],volume:true}]
+            .concat(Lib.capacityRows(storageObservation.snapshot));
+        rows.push({label:"ROM inventory · all locations",value:label(summary),evidence:summary});
         if (storageApp("files")) rows.push({ label: "Manage files", value: "Open Files", app: "files" });
         if (storageApp("steam")) rows.push({ label: "Steam storage", value: "Open DroidDeck", app: "steam" });
         summary.groups.forEach(function(g) { rows.push({ label: Lib.consoleShortName(g), value: label(g), evidence: g, fraction: summary.bytes && g.known ? g.bytes / summary.bytes : 0 }); });
@@ -1352,6 +1786,11 @@ FocusScope {
     }
 
     function panelRows(rev) {
+        if(overlay === "choices")return choiceRows();
+        if(overlay === "dischelp")return Guides.discRows(discHelpEntry);
+        if(overlay === "savecopies")return Copies.rows(saveCopiesData,saveCopyResults);
+        if(overlay === "rotation")return rotationRows();
+        if(overlay === "shelf")return shelfRows();
         if(overlay === "pcruntime")return pcRows();
         if (overlay === "discs") return discTarget ? discTarget.discMembers.map(function(e) {
             return { label: "Disc " + e.discNumber, value: e.game.missing ? "File missing here" : e.launchable ? "Set up here" : "Not set up here" };
@@ -1385,7 +1824,9 @@ FocusScope {
             {label:"Source",value:"github.com/maxwellyoung/nova-library"}
         ];
         if (overlay === "storage") return storageRows();
-        if (overlay === "guide") return Guides.rows(current);
+        if (overlay === "guide") return Guides.rows(current).concat(checkedMemoryAvailable()?[{
+            label:"Input preferences",value:profileSetup(current)?"Saved preferences only":"Setup not recorded",inputProfile:true,
+            detail:"These preferences belong to one exact edition, runtime and version. Saving does not apply them to a game. Record a known runtime/version in this edition’s setup before editing."}]:[]);
         if (overlay === "checks") return Compatibility.rows(current && current.discMembers ? current.discEdition : current, now);
         if (overlay === "controls")
             return [
@@ -1432,22 +1873,55 @@ FocusScope {
                 return { label: Lib.STATUS_LABELS[s], value: current && current.status === s ? "Current" : "" };
             });
         if (overlay === "threadpick") {
-            var rows = keptThreads().map(function(t) {
-                return { label: t.name, value: current && Lib.indexOfId(t.entries, current.id) !== -1 ? "In this collection" : "" };
-            });
-            rows.push({ label: "New collection", value: "" });
+            var e=rotationEntry(current);
+            var rows=[{label:"Your rotation",value:!rotation?"Unavailable":Rotation.contains(rotation,e?e.id:"")?"In rotation":"Add here",rotation:true,dim:rotation===null}];
+            if(!shelves)rows.push({label:"Your shelves",value:"Unavailable",dim:true,shelfUnreadable:true});
+            else {
+                rows=rows.concat(shelves.shelves.map(function(s){
+                    return {label:s.name,value:Discovery.contains(shelves,s.id,e?e.id:"")?"On this shelf":"Add here",shelf:s.id};
+                }));
+                var full=shelves.shelves.length>=Discovery.SHELF_LIMIT;
+                rows.push({label:"New shelf",value:full?"Limit reached":"This device",newshelf:true,dim:full});
+            }
+            if(canEdit && current && !current.cloudId)rows=rows.concat(keptThreads().map(function(t) {
+                return {label:t.name,value:Lib.indexOfId(t.entries,current.id)!==-1?"In this collection":"",collection:t};
+            }));
+            if(canEdit && current && !current.cloudId)rows.push({label:"New collection",value:"",create:true});
             return rows;
         }
         return [];
     }
 
     function panelFooter(rev) {
+        if(overlay === "choices") {
+            var choiceRow=choiceRows()[panelIndex],selectedChoice=null;
+            choiceData.choices.forEach(function(p){if(choiceRow && p.key===choiceRow.choice)selectedChoice=p;});
+            var explanation=selectedChoice?Lib.displayTitle(selectedChoice.entry)+". "+selectedChoice.reason+". ":"";
+            if(!choiceData.total)return "No local games are marked ready in this catalogue. Check their setup in Library, or pass to return Home. No download starts here.";
+            return explanation+"Showing "+choiceData.choices.length+" of "+choiceData.total+" available choices. Availability comes from Library; offline readiness is checked separately. Refresh rechecks this short list; passing changes no favourites or progress.";
+        }
+        if(overlay === "dischelp") {
+            var step=Guides.discRows(discHelpEntry)[panelIndex];
+            return step?step.detail:"";
+        }
+        if(overlay === "rotation") {
+            if(!rotation)return "Saved choices are unreadable and will not be overwritten.";
+            if(!rotation.editions.length)return "Add a game from Details → Collections → Your rotation. This collection changes no files, saves or favourites.";
+            var selected=rotationRows()[panelIndex];
+            return (selected?selected.label+". ":"")+"Left / right moves this edition earlier / later. "+kAccept+" removes it from the rotation only. Missing catalogue editions keep their place. No game files or saves are changed.";
+        }
+        if(overlay === "savecopies") {
+            var copyRow=Copies.rows(saveCopiesData,saveCopyResults)[panelIndex];
+            return Copies.footer(copyRow,copyRow && copyRow.copy ? saveCopyResults[copyRow.copy.checkpointId] : null,
+                                 copyRow && copyRow.copy && saveCopyChecking===copyRow.copy.checkpointId,
+                                 Copies.canReview(saveCopiesBridge,saveCopiesData,copyRow));
+        }
         if(overlay === "pcruntime"){var pcRow=pcRows()[panelIndex];return pcNotice || (pcRow?pcRow.reason:"") + (!pcChoices.readable?" Saved choices need review and will not be overwritten.":"");}
         if (overlay === "discs") {
             var member = discTarget && discTarget.discMembers[panelIndex];
             return member ? Lib.routeSentence(member)
                 + (member.lastPlayedHere !== null ? " Last opened here: " + Lib.ago(member.lastPlayedHere, now) + "." : " No local launch history.")
-                + " This launches the selected disc. Changing discs during a running game uses the emulator." : "";
+                 + " This launches the selected disc; it does not swap a running game's disc. Open Swap help for the emulator path." : "";
         }
         if (overlay === "settings") {
             if (panelIndex === 5) return healthFooter();
@@ -1470,6 +1944,15 @@ FocusScope {
         if (overlay === "storage") {
             var rows = storageRows();
             var row = rows[panelIndex];
+            if(row && (row.volume || row.category)) {
+                var cap=storageObservation.snapshot,name=Lib.CAPACITY_NAMES[storageVolumeId];
+                if(!cap)return storageObservation.status==="conflict"?name+": newest capacity values conflict. No byte proportions are shown. Older values are not substituted.":name+": no readable capacity snapshot. This does not establish that a card is absent or empty. The ROM inventory covers all catalogue locations separately.";
+                var scope=name+" · "+Lib.dateEvidenceText(cap.observedAt)+" · Reported by "+cap.source+". ";
+                var category=cap.breakdownState==="invalid"?"Category sizes could not be reconciled; used space stays unclassified. ":cap.breakdownState==="conflict"?"Category reports conflict; used space stays unclassified. ":cap.breakdownState==="unmeasured"?"Categories were not measured; used space stays unclassified. ":"Reported category sizes; unmeasured usage stays unclassified. ";
+                if(row.category && row.bytes===null)category=row.label+" was not measured; any such usage remains in Unclassified used. "+category;
+                if(row.category==="unavailable")category="Unavailable capacity is total minus used and free; its cause is not established. ";
+                return scope+category+"Browse categories to highlight their share of this volume. ROM file sizes below are separate and cover all locations.";
+            }
             if (row && row.app) return row.app === "steam" ? "Manage Steam installs in DroidDeck. No download is started here." : "Browse and manage your files in the Files app.";
             var evidence = row && row.entry ? { known: 1, unknown: 0, oldest: row.entry.sizeObservedAt, newest: row.entry.sizeObservedAt, undated: row.entry.sizeObservedAt === null ? 1 : 0 }
                          : row && row.evidence ? row.evidence : Lib.storageSummary(rawEntries);
@@ -1503,12 +1986,40 @@ FocusScope {
                 + " Choose Not labelled to clear.";
         if (overlay === "status")
             return (current ? current.title + ". " : "") + (current && current.discMembers ? "Disc " + current.discNumber + " record. " : "") + "Status is yours to set. Play time never changes it.";
-        if (overlay === "threadpick")
+        if(overlay === "shelf") {
+            if(!shelves)return "Saved shelves are unreadable and will not be overwritten.";
+            var editing=Discovery.find(shelves,shelfEditId),srow=shelfRows()[panelIndex];
+            if(!editing)return "This shelf is no longer saved. Back returns to Collections.";
+            if(!srow)return "";
+            if(srow.act==="rename")return kAccept+" renames this shelf. Its games stay on it.";
+            if(srow.act==="kind")return "Feeling or purpose is your own description of the shelf. "+kAccept+" or left / right changes it. Nothing is inferred from play.";
+            if(srow.act==="order")return "Left / right moves this shelf earlier or later in Collections. Your rotation stays first.";
+            if(srow.act==="member")return srow.label+". Left / right moves it earlier / later. "+kAccept+" removes it from this shelf only."+(srow.entry?"":" It is not in this catalogue; its place is kept.")+" No game files or saves change.";
+            if(srow.act==="delete")return editing.editions.length?"Remove this shelf's games first. A shelf with games is never deleted in one press.":kAccept+" deletes this empty shelf. No games or files change.";
+            return "";
+        }
+        if (overlay === "threadpick") {
+            var row=panelRows(rev)[panelIndex],e=rotationEntry(current);
+            if(row && row.shelfUnreadable)return "Saved shelves could not be read and will not be overwritten.";
+            if(row && row.shelf) {
+                var onShelf=Discovery.contains(shelves,row.shelf,e?e.id:"");
+                return (onShelf?"Remove ":"Add ")+shelfEditionLabel(e)+(onShelf?" from “":" to “")+row.label+"”. Your own shelf, saved on this device only. No game files change.";
+            }
+            if(row && row.newshelf)return row.dim?"You can keep up to "+Discovery.SHELF_LIMIT+" shelves. Empty and delete one in Collections first.":
+                "Name a shelf for a feeling or purpose, like “dreamlike” or “ten-minute adrenaline”. "+shelfEditionLabel(e)+" starts it. Saved on this device only.";
+            if(row && row.rotation)return !rotation?"Saved rotation could not be read and will not be overwritten.":
+                (Rotation.contains(rotation,e?e.id:"")?"Remove ":"Add ")+(e?Lib.displayTitle(e):"this edition")+
+                (current && current.discMembers?" · Disc "+current.discNumber:"")+". Saved on this device only. Reorder in Collections → Your rotation → Edit rotation. No game files change.";
             return current ? "Choose a collection to add or remove " + current.title + (current.discMembers ? " · Disc " + current.discNumber : "") + "." : "";
+        }
         return "";
     }
 
     function panelActivate(i, step) {
+        if(overlay === "choices"){activateChoice(i);return;}
+        if(overlay === "rotation"){panelIndex=i;editRotation(0);return;}
+        if(overlay === "shelf"){panelIndex=i;editShelf(0);return;}
+        if(overlay === "savecopies"){checkSaveCopy(i);return;}
         if(overlay === "pcruntime"){activatePcRuntime(i);return;}
         panelIndex = i;
         if (overlay === "discs") {
@@ -1517,10 +2028,18 @@ FocusScope {
             else say("This disc isn't set up here. No game was launched.");
         } else if (overlay === "checks") {
             var check = Compatibility.rows(current && current.discMembers ? current.discEdition : current, now)[i];
-            if (check) { checkDetail = check; overlay = "facts"; detailFlick.contentY = 0; }
+            if (check) { checkDetail = check; checkDetailReturn = "checks"; overlay = "facts"; detailFlick.contentY = 0; }
+        } else if (overlay === "guide") {
+            var guide = panelRows(personalRev)[i];
+            if(guide && guide.inputProfile && profileSetup(current)){openInputProfile();return;}
+            if (guide && guide.detail) {
+                checkDetail = {label:guide.label,detail:(guide.value ? guide.value+"\n\n" : "")+guide.detail};
+                checkDetailReturn = "guide"; overlay = "facts"; detailFlick.contentY = 0;
+            }
         } else if (overlay === "storage") {
             var row = storageRows()[i];
-            if (row && row.app) { var app = storageApp(row.app); if (app) playEdition(app); }
+            if(row && row.volume) {storageVolumeId=Lib.CAPACITY_IDS[(Lib.CAPACITY_IDS.indexOf(storageVolumeId)+step+2)%2];panelIndex=0;}
+            else if (row && row.app) { var app = storageApp(row.app); if (app) playEdition(app); }
         } else if (overlay === "settings") {
             settingsIndex = i;
             if (i === 0) openPanel("appearance", 0);
@@ -1540,31 +2059,64 @@ FocusScope {
         else if (overlay === "session") { setSession(i === 0 ? "" : Lib.SESSION_WINDOWS[i-1]); }
         else if (overlay === "status") { setStatus(Lib.STATUSES[i]); closeOverlay(); }
         else if (overlay === "threadpick") {
-            var kept = keptThreads();
-            if (i < kept.length) toggleMembership(kept[i], current);
-            else openText("thread-name", current ? current.id : "");
+            var row=panelRows(personalRev)[i];
+            if(row && row.rotation)toggleRotation();
+            else if(row && row.shelf)toggleShelf(row.shelf);
+            else if(row && row.newshelf)openShelfName("new");
+            else if(row && row.shelfUnreadable)say("Saved shelves could not be read. Nothing was changed.");
+            else if(row && row.collection)toggleMembership(row.collection,current);
+            else if(row && row.create)openText("thread-name", current ? current.id : "");
         }
     }
 
     function hints() {
+        if(overlay === "choices") {
+            var pick=choiceRows()[panelIndex];
+            var targetChoice=choiceData.choices[panelIndex];
+            return (pick && !pick.dim?[{k:kAccept,l:pick.refresh?"Refresh":pick.pass?"Pass":targetChoice && targetChoice.entry.discMembers?"Choose disc":"Play",a:"panel"}]:[])
+                .concat([{k:kCancel,l:"Home",a:"close"}]);
+        }
+        if(overlay === "shelf") {
+            var sr=shelfRows()[panelIndex],sh=[];
+            if(sr && sr.act==="rename")sh.push({k:kAccept,l:"Rename",a:"panel"});
+            if(sr && sr.act==="kind")sh.push({k:kAccept,l:"Change",a:"panel"});
+            if(sr && sr.act==="member")sh.push({k:kAccept,l:"Remove",a:"panel"});
+            if(sr && (sr.act==="order" || sr.act==="member"))sh.push({k:"←",l:"Earlier",a:"shelfearlier"},{k:"→",l:"Later",a:"shelflater"});
+            if(sr && sr.act==="delete" && !sr.dim)sh.push({k:kAccept,l:"Delete",a:"panel"});
+            return sh.concat([{k:kCancel,l:"Collections",a:"close"}]);
+        }
+        if(overlay === "rotation")return (rotation && rotation.editions.length?[{k:kAccept,l:"Remove",a:"panel"},{k:"←",l:"Earlier",a:"rotationearlier"},{k:"→",l:"Later",a:"rotationlater"}]:[]).concat([{k:kCancel,l:"Collections",a:"close"}]);
         if(overlay === "pcruntime"){var pcRow=pcRows()[panelIndex];return [{k:kAccept,l:pcRow && pcRow.available?(pcRow.forget?"Forget choice":pcRow.legacy?"Use shortcut":"Open here"):"Unavailable",a:"panel"},{k:kDetails,l:"Refresh",a:"pcrefresh"},{k:kCancel,l:"Back",a:"close"}];}
         if (overlay === "notebook") return notebookPanel.hints();
+        if (overlay === "failurepreview") return [];
+        if (overlay === "copypicture") return [{k:kCancel,l:"Save copies",a:"close"}];
         if (overlay === "controller") return controllerPanel.hints();
+        if (overlay === "inputprofile") return inputProfilePanel.hints();
         if (overlay === "facts") return (detailFlick.contentHeight > detailFlick.height+1 ? [{k:"↑ ↓",l:"Read",a:"readfacts"}] : []).concat([{ k: kCancel, l: "Back", a: "close" }]);
         if (overlay === "discs") {
             var member = discTarget && discTarget.discMembers[panelIndex];
-            return [{ k: kAccept, l: member && member.launchable && !member.game.missing ? "Play disc" : "Unavailable", a: "panel" }, { k: kCancel, l: "Back", a: "close" }];
+            return [{ k: kAccept, l: member && member.launchable && !member.game.missing ? "Play disc" : "Unavailable", a: "panel" }, { k:kDetails,l:"Swap help",a:"dischelp" }, { k: kCancel, l: "Back", a: "close" }];
         }
         if (overlay === "settings") return [{ k: kAccept, l: panelIndex === 1 ? "Sync now" : panelIndex === 5 ? "Reload" : "Open", a: "panel" }, { k: kCancel, l: "Back", a: "close" }];
         if (overlay === "phoneaudio") return (panelIndex===0 && phoneAudioApp() ? [{k:kAccept,l:"Open receiver",a:"panel"}] : []).concat([{k:kCancel,l:overlayReturn==="settings"?"Settings":"Apps",a:"close"}]);
         if (overlay === "storage") {
             var row = storageRows()[panelIndex];
-            return (row && row.app ? [{ k: kAccept, l: "Open", a: "panel" }] : [])
+            return (row && row.volume ? [{k:kAccept,l:"Change volume",a:"panel"}] : row && row.app ? [{ k: kAccept, l: "Open", a: "panel" }] : [])
                 .concat([{ k: "↑ ↓", l: "Browse", a: "read" }, { k: kCancel, l: "Back", a: "close" }]);
         }
-        if (overlay === "checks")
+        if(overlay === "guide" && panelRows(personalRev)[panelIndex] && panelRows(personalRev)[panelIndex].inputProfile && profileSetup(current))
+            return [{k:kAccept,l:"Edit preferences",a:"panel"},{k:kCancel,l:"Back",a:"close"}];
+        if (overlay === "checks" || (overlay === "guide" && panelRows(personalRev)[panelIndex] && panelRows(personalRev)[panelIndex].detail))
             return [{ k: kAccept, l: "Read full", a: "panel" }, { k: "↑ ↓", l: "Browse", a: "read" }, { k: kCancel, l: "Back", a: "close" }];
-        if (overlay === "controls" || overlay === "refresh" || overlay === "guide" || overlay === "about")
+        if(overlay === "savecopies") {
+            var copyRow=Copies.rows(saveCopiesData,saveCopyResults)[panelIndex];
+            return (Copies.canReview(saveCopiesBridge,saveCopiesData,copyRow) && !saveCopyToken
+                    ? [{k:kAccept,l:"Check copy",a:"panel"}] : [])
+                    .concat(!saveCopyToken && Copies.canPicture(saveCopiesBridge,saveCopiesData,copyRow)?[{k:kDetails,l:"Picture",a:"copypicture"}]:[])
+                    .concat(saveFailureContext()?[{k:kKeep,l:"Review failure",a:"savefailure"}]:[])
+                    .concat([{k:kCancel,l:"Back",a:"close"}]);
+        }
+        if (overlay === "controls" || overlay === "refresh" || overlay === "guide" || overlay === "dischelp" || overlay === "about")
             return [{ k: "↑ ↓", l: "Read", a: "read" }, { k: kCancel, l: "Back", a: "close" }];
         if (overlay === "appearance" || overlay === "filters") {
             var p = [{ k: kAccept, l: "Change", a: "panel" }];
@@ -1599,11 +2151,13 @@ FocusScope {
             if (currentThread && currentThread.entries.length) t.push({ k: kAccept, l: "Open", a: "openthread" });
             t.push({k:kCancel,l:"Home",a:"home"});
             if (canKeepThread(currentThread)) t.push({ k: kKeep, l: "Save collection", a: "keepthread" });
-            if (canEdit) t.push({ k: kDetails, l: "New collection", a: "newthread" });
+            if (currentThread && currentThread.origin==="rotation")t.push({k:kDetails,l:"Edit rotation",a:"editrotation"});
+            else if (currentThread && currentThread.origin==="shelf"){if(!currentThread.unreadable)t.push({k:kDetails,l:"Edit shelf",a:"editshelf"});}
+            else if (canEdit) t.push({ k: kDetails, l: "New collection", a: "newthread" });
             return t;
         }
         if (view === "home" && !allEntries.length)
-            return [{ k:kAccept, l:"Library setup", a:"setup" }];
+            return [{ k:kAccept, l:"Library setup", a:"setup" },{k:"↓",l:"Three to try",a:"choices"}];
         var h = [];
         if (pcOptionsAvailable(current) && (!current.launchable || PC.choice(current,pcChoices))) h.push({k:kAccept,l:PC.actionLabel(current,pcChoices),a:"play"});
         else if (current && current.cloudId && !current.launchable && current.cloudSupported) h.push({ k: kAccept, l: Lib.cloudActionLabel(current), a: "play" });
@@ -1611,20 +2165,31 @@ FocusScope {
         if (current && (current.discMembers || current.launchable) && !PC.choice(current,pcChoices)) h.push({ k: kAccept, l: current.discMembers ? "Choose disc" : "Play", a: "play" });
         if (current && (current.launchable || current.discMembers || current.cloudId || pcOptionsAvailable(current))) h.push({ k: kDetails, l: "Details", a: "details" });
         if (current) h.push({ k: kKeep, l: (currentPinned ? "Unfavourite" : "Favourite") + (current.discMembers ? " disc " + current.discNumber : ""), a: "keep" });
+        if(view === "home")h.push({k:"↓",l:"Three to try",a:"choices"});
         if (view === "library") h.push({ k: kCancel, l: fromConsole ? "Consoles" : "Home", a: "libraryback" });
         if (view === "threads" && threadZone === "members") h.push({ k: kCancel, l: "Collections", a: "threadback" });
         return h;
     }
 
     function runHint(a) {
+        if(a === "choices"){openChoices();return;}
         if(a === "pcrefresh"){refreshPcRuntimes();return;}
         if (a.indexOf("notebook:") === 0) notebookPanel.runHint(a.slice(9));
+        else if (a.indexOf("input:") === 0) {
+            if(a==="input:activate")inputProfilePanel.activate();
+            else if(a==="input:less")inputProfilePanel.change(-1);
+            else if(a==="input:more")inputProfilePanel.change(1);
+            else if(a==="input:back")inputProfilePanel.back();
+        }
         else if (a.indexOf("controller:") === 0) controllerPanel.runHint(a.slice(11));
         else if (a === "setup") { openPanel("settings",4); panelActivate(4,1); }
         else if (a === "play") play(current);
         else if (a === "droiddeck") openDroidDeck();
         else if (a === "phoneaudio") openPanel("phoneaudio",0);
         else if (a === "details") openDetails();
+        else if (a === "dischelp") openDiscHelp();
+        else if (a === "savefailure") openSaveFailure();
+        else if (a === "copypicture") openSaveCopyPicture();
         else if (a === "keep") toggleKeep(current);
         else if (a === "close") closeOverlay();
         else if (a === "panel") panelActivate(panelIndex, 1);
@@ -1645,6 +2210,12 @@ FocusScope {
         else if (a === "openthread") openThread();
         else if (a === "keepthread") keepThread(currentThread);
         else if (a === "newthread") openText("thread-name", "");
+        else if (a === "editrotation") openRotationEditor();
+        else if (a === "rotationearlier") editRotation(-1);
+        else if (a === "rotationlater") editRotation(1);
+        else if (a === "editshelf") openShelfEditor();
+        else if (a === "shelfearlier") editShelf(-1);
+        else if (a === "shelflater") editShelf(1);
         else if (a === "save") endText(true);
         else if (a === "cancel") endText(false);
     }
@@ -1694,12 +2265,15 @@ FocusScope {
     onEnabledChanged: if(!enabled)androidBackArmed=false
     function applicationActive(active) {
         if(active)return;
+        if(overlay==="copypicture" || overlay==="failurepreview")closeOverlay();
+        if(saveCopyToken && saveCopiesBridge){saveCopiesBridge.cancelReview();saveCopyToken="";saveCopyChecking="";}
         androidBackArmed=false;
         if(cloudBridge && cloudBridge.launchChecking===true && typeof cloudBridge.cancel==="function")cloudBridge.cancel();
     }
     Connections { target:Qt.application; function onStateChanged(){root.applicationActive(Qt.application.state===Qt.ApplicationActive);} }
 
     function handleKey(event) {
+        if(!event.isAutoRepeat)documentNotice="";
         var k = api.keys;
         if(overlay === "notebook"){notebookPanel.handleKey(event);return;}
         // Android finishes an Activity on an unconsumed Back release. Keep its
@@ -1709,6 +2283,7 @@ FocusScope {
             if (!event.isAutoRepeat) {androidBackArmed=true;androidBackContext=backContext();}
             return;
         }
+        if (overlay === "failurepreview") {event.accepted=true;if(failurePreviewLoader.item)failurePreviewLoader.item.handleKey(event,k);else if(k.isCancel(event))closeOverlay();return;}
         if (overlay === "cloud") {
             if (!event.isAutoRepeat || k.isUp(event) || k.isDown(event)) cloudPanel.handleKey(event);
             event.accepted = true;
@@ -1718,6 +2293,12 @@ FocusScope {
         if (overlay === "controller") { controllerPanel.handleKey(event); return; }
         if (event.isAutoRepeat && (k.isAccept(event) || k.isDetails(event) || k.isFilters(event) || k.isCancel(event))) {
             event.accepted = true;
+            return;
+        }
+        if (overlay === "inputprofile") { inputProfilePanel.handle(event,api.keys); return; }
+        if(overlay === "copypicture") {
+            event.accepted=true;
+            if(k.isCancel(event) || k.isDetails(event))closeOverlay();
             return;
         }
 
@@ -1747,15 +2328,22 @@ FocusScope {
             event.accepted = true;
             var rows = panelRows(personalRev).length;
             // Left and right change a value; they never trigger Sync or Clear filters.
-            var cycles = (overlay === "appearance" && panelIndex < 4) || (overlay === "filters" && panelIndex < 7);
+            var cycles = (overlay === "appearance" && panelIndex < 4) || (overlay === "filters" && panelIndex < 7) || (overlay === "storage" && panelIndex===0);
             if (k.isCancel(event) || event.key === Qt.Key_Back || (overlay === "filters" && k.isFilters(event))) closeOverlay();
             else if (k.isUp(event)) panelIndex = Math.max(0, panelIndex - 1);
             else if (k.isDown(event)) panelIndex = Math.min(rows - 1, panelIndex + 1);
             else if (k.isAccept(event)) panelActivate(panelIndex, 1);
+            else if(overlay === "rotation" && k.isRight(event))editRotation(1);
+            else if(overlay === "rotation" && k.isLeft(event))editRotation(-1);
+            else if(overlay === "shelf" && k.isRight(event))editShelf(1);
+            else if(overlay === "shelf" && k.isLeft(event))editShelf(-1);
             else if (cycles && k.isRight(event)) panelActivate(panelIndex, 1);
             else if (cycles && k.isLeft(event)) panelActivate(panelIndex, -1);
             else if (overlay === "filters" && k.isDetails(event)) clearFilters();
             else if (overlay === "pcruntime" && k.isDetails(event)) refreshPcRuntimes();
+            else if (overlay === "discs" && k.isDetails(event)) openDiscHelp();
+            else if (overlay === "savecopies" && k.isFilters(event)) openSaveFailure();
+            else if (overlay === "savecopies" && k.isDetails(event)) openSaveCopyPicture();
             else event.accepted = false;
             return;
         }
@@ -1800,6 +2388,7 @@ FocusScope {
         if (view === "home") {
             if (k.isLeft(event)) moveHome(-1);
             else if (k.isRight(event)) moveHome(1);
+            else if (k.isDown(event)) openChoices();
             else if (k.isUp(event)) { zone = "nav"; navIndex = 0; }
             else if (k.isPageUp(event)) homeIndex = 0;
             else if (k.isPageDown(event)) homeIndex = Math.max(0, homeEntries.length - 1);
@@ -1846,7 +2435,7 @@ FocusScope {
                 else if (k.isDown(event)) selectThread(threadIndex + 1);
                 else if (k.isRight(event) || k.isAccept(event)) openThread();
                 else if (k.isFilters(event)) keepThread(currentThread);
-                else if (k.isDetails(event)) openText("thread-name", "");
+                else if (k.isDetails(event)) {if(currentThread && currentThread.origin==="rotation")openRotationEditor();else if(currentThread && currentThread.origin==="shelf")openShelfEditor();else if(canEdit)openText("thread-name", "");}
                 else if (k.isCancel(event)) switchView("home");
                 else return;
             } else {
@@ -2137,205 +2726,59 @@ FocusScope {
 
     Item {
         id: home
-        anchors.fill: parent
+        width: parent.width; height: root.usableHeight
         visible: root.view === "home" && root.overlay === ""
 
-        readonly property real shelfBase: Math.round(root.usableHeight * 0.64)
-        // The greeting sits above the shelf; covers give up a little height to make room.
-        readonly property real focusH: Math.min(px(440), shelfBase - homeGreeting.y - homeGreeting.height - px(34))
-        readonly property real area: focusH * focusH * 2 / 3
-
-        Column {
-            id: homeGreeting
-            objectName: "homeGreeting"
-            x: px(64); y: px(104); width: parent.width - px(128); spacing: px(6)
-            Text {
-                text: Lib.homeHeading(root.homeEntries,root.homeCaptions,root.homeIsFallback,root.greetingText)
-                color: root.ink
-                font.family: root.sans; font.pixelSize: fs(34); font.weight: Font.DemiBold
-            }
-            Text {
-                visible: root.homeEntries.length > 1; width: parent.width
-                text: (root.homeIndex+1)+" / "+root.homeEntries.length; color: root.quiet
-                font.family: root.sans; font.pixelSize: fs(20); elide: Text.ElideRight
-            }
-        }
-
-        Item {
-            id: shelf
-            y: px(96)
-            width: parent.width
-            height: home.shelfBase - y + px(16)
-            clip: true
-
-            Row {
-                id: shelfRow
-                property real focusX: 0
-                height: home.shelfBase - shelf.y
-                spacing: px(36)
-                x: px(64) - focusX
-                Behavior on x { enabled: !root.reducedMotion; NumberAnimation { duration: 120; easing.type: Easing.OutCubic } }
-
-                Repeater {
-                    id: shelfRepeater
-                    model: root.homeEntries
-                    delegate: Item {
-                        id: cell
-                        readonly property bool isCurrent: index === root.homeIndex
-                        readonly property real k: isCurrent ? 1 : 0.8
-                        readonly property var fit: Lib.fitArea(cover.ratio, home.area * k * k, root.width * 0.55 * k, home.focusH * k)
-                        width: fit.w + (root.homeGapAfter[modelData.id] ? px(60) : 0)
-                        height: shelfRow.height
-                        // Earlier covers leave the screen rather than showing as a cropped sliver.
-                        opacity: index < root.homeIndex ? 0 : 1
-
-                        Binding {
-                            target: shelfRow
-                            property: "focusX"
-                            value: cell.x
-                            when: cell.isCurrent
-                            restoreMode: Binding.RestoreNone
-                        }
-
-                        ArtView {
-                            id: cover
-                            entry: modelData
-                            width: cell.fit.w
-                            height: cell.fit.h
-                            anchors.bottom: parent.bottom
-                            fontFamily: root.sans
-                            slabColor: root.slab
-                            textColor: root.ink
-                            quietColor: root.quiet
-                            veilColor: root.ground
-                            veil: 1 - (cell.isCurrent ? 1 : 0.7) * (modelData.launchable ? 1 : 0.55)
-                        }
-
-                        Rectangle {
-                            visible: cell.isCurrent && root.zone === "content"
-                            x: cover.x - px(9)
-                            y: cover.y - px(9)
-                            width: cover.width + px(18)
-                            height: cover.height + px(18)
-                            color: "transparent"
-                            border.color: root.ink
-                            border.width: Math.max(2, px(3))
-                        }
-                    }
-                }
-            }
-
-            MouseArea {
-                id: shelfTouch
-                anchors.fill: parent
-                property real startX: 0
-                onPressed: function(mouse) { startX = mouse.x; }
-                onReleased: function(mouse) {
-                    root.zone = "content";
-                    var dx = mouse.x - startX;
-                    if (Math.abs(dx) > px(40)) {
-                        var steps = Math.max(1, Math.round(Math.abs(dx) / px(260)));
-                        root.moveHome(dx < 0 ? steps : -steps);
-                        return;
-                    }
-                    for (var i = 0; i < shelfRepeater.count; i++) {
-                        var it = shelfRepeater.itemAt(i);
-                        if (!it || it.opacity === 0)
-                            continue;
-                        var p = shelfTouch.mapToItem(it, mouse.x, mouse.y);
-                        if (p.x >= 0 && p.x <= it.width) {
-                            if (i === root.homeIndex) root.openDetails();
-                            else root.homeIndex = i;
-                            return;
-                        }
-                    }
-                }
+        // Keep a presentation failure local: mapped navigation and Library remain usable.
+        Loader {
+            id: homePresentation
+            anchors.fill: parent
+            active: home.visible
+            source: active ? "HomeShelf.qml" : ""
+            onLoaded: {
+                item.entries = Qt.binding(function() { return root.homeEntries; });
+                item.selectedIndex = Qt.binding(function() { return root.homeIndex; });
+                item.focusActive = Qt.binding(function() { return root.zone === "content"; });
+                item.reducedMotion = Qt.binding(function() { return root.reducedMotion; });
+                item.heading = Qt.binding(function() { return Lib.homeHeading(root.homeEntries,root.homeCaptions,root.homeIsFallback,root.greetingText); });
+                item.contextText = Qt.binding(function() { return root.homeCurrent ? Lib.consoleShortName({id:root.homeCurrent.systemId,name:root.homeCurrent.systemName})+" · "+root.homeReason(root.homeCurrent) : ""; });
+                item.statusText = Qt.binding(function() { return root.quietLine(root.homeCurrent, root.personalRev); });
+                item.checkpointText = Qt.binding(function() { return root.homeCheckpoint(root.homeCurrent, root.personalRev); });
+                item.canOpenNotebook = Qt.binding(function() { return root.homeCurrent !== null && (root.notebookBridge !== null || root.canEdit); });
+                item.emptyTitle = Qt.binding(function() { return root.allEntries.length ? "Nothing on Home yet." : "Add your first games."; });
+                item.emptyText = Qt.binding(function() { return root.allEntries.length ? "Open Library with " + root.kNext + " and keep a game with " + root.kKeep + "." : "No games have been loaded. Library setup explains how to add your catalogue."; });
+                item.ground = Qt.binding(function() { return root.ground; });
+                item.ink = Qt.binding(function() { return root.ink; });
+                item.quiet = Qt.binding(function() { return root.quiet; });
+                item.slab = Qt.binding(function() { return root.slab; });
+                item.fontFamily = Qt.binding(function() { return root.sans; });
+                item.textScale = Qt.binding(function() { return root.textScale; });
             }
         }
-
-        Column {
-            x: px(64)
-            y: home.shelfBase + px(34)
-            width: root.width - px(128)
-            spacing: px(6)
-            visible: root.homeCurrent !== null
-
-            Row {
-                width: parent.width; spacing: px(10)
-                Icon {
-                    name: Lib.consoleCardGlyph(root.homeCurrent ? root.homeCurrent.systemId : "")
-                    width: px(28); alignX: 0
-                    height: px(22); ink: root.quiet
-                }
-                Text {
-                    width: parent.width-px(96)
-                    text: root.homeCurrent ? Lib.consoleShortName({id:root.homeCurrent.systemId,name:root.homeCurrent.systemName})+" · "+root.homeReason(root.homeCurrent) : ""
-                    color: root.quiet; font.family: root.sans; font.pixelSize: fs(20)
-                    maximumLineCount: 1; elide: Text.ElideRight
-                }
-            }
-            Text {
-                width: parent.width
-                text: Lib.displayTitle(root.homeCurrent)
-                color: root.ink
-                font.family: root.sans
-                font.pixelSize: fs(44)
-                font.weight: Font.DemiBold
-                maximumLineCount: 1
-                elide: Text.ElideRight
-            }
-            Text {
-                width: parent.width
-                text: root.quietLine(root.homeCurrent, root.personalRev)
-                color: root.quiet
-                font.family: root.sans
-                font.pixelSize: fs(24)
-                elide: Text.ElideRight
-            }
-            Text {
-                objectName: "homeCheckpoint"
-                width: parent.width
-                // Only a real note earns this line; Details' Note action is the way to add one.
-                visible: text !== ""
-                text: root.homeCheckpoint(root.homeCurrent, root.personalRev)
-                color: root.quiet
-                font.family: root.sans
-                font.pixelSize: fs(24)
-                maximumLineCount: root.wide ? 1 : 2
-                elide: Text.ElideRight
-                wrapMode: Text.Wrap
-                MouseArea {
-                    objectName: "homeNote"
-                    anchors.fill: parent
-                    enabled: root.homeCurrent !== null && (root.notebookBridge !== null || root.canEdit)
-                    onClicked: root.openNotebook(root.homeCurrent)
-                }
-            }
+        Connections {
+            target: homePresentation.item
+            ignoreUnknownSignals: true
+            function onSelectionRequested(index) { root.zone = "content"; root.homeIndex = index; }
+            function onDetailsRequested() { root.zone = "content"; root.openDetails(); }
+            function onNotebookRequested() { if (root.homeCurrent) root.openNotebook(root.homeCurrent); }
         }
-
         Column {
-            x: px(64)
-            y: px(220)
-            width: root.width - px(128)
-            spacing: px(10)
-            visible: root.homeEntries.length === 0
-
+            objectName: "homePresentationFallback"
+            x: px(64); y: px(180); width: parent.width-px(128); spacing: px(20)
+            visible: homePresentation.status === Loader.Error
             Text {
-                text: root.allEntries.length ? "Nothing on Home yet." : "Add your first games."
-                color: root.ink
-                font.family: root.sans
-                font.pixelSize: fs(36)
-                font.weight: Font.DemiBold
+                width: parent.width; text: root.homeCurrent ? Lib.displayTitle(root.homeCurrent) : "Your games"
+                color: root.ink; font.family: root.sans; font.pixelSize: fs(36)
+                textFormat: Text.PlainText; wrapMode: Text.Wrap; maximumLineCount: 3; elide: Text.ElideRight
             }
             Text {
-                width: parent.width
-                wrapMode: Text.Wrap
-                text: root.allEntries.length
-                      ? "Open Library with " + root.kNext + " and keep a game with " + root.kKeep + "."
-                      : "No games have been loaded. Library setup explains how to add your catalogue."
-                color: root.quiet
-                font.family: root.sans
-                font.pixelSize: fs(26)
+                width: parent.width; text: "Open Library to browse your games."
+                color: root.quiet; font.family: root.sans; font.pixelSize: fs(26)
+                textFormat: Text.PlainText; wrapMode: Text.Wrap
+            }
+            Text {
+                text: "Library →"; color: root.ink; font.family: root.sans; font.pixelSize: fs(28)
+                MouseArea { anchors.fill: parent; onClicked: { root.zone = "content"; root.view = "library"; } }
             }
         }
     }
@@ -2380,6 +2823,7 @@ FocusScope {
                 TextInput {
                     id: searchInput
                     objectName: "searchInput"
+                    maximumLength: root.searchLimit
                     anchors.fill: parent
                     verticalAlignment: TextInput.AlignVCenter
                     color: root.ink
@@ -2392,6 +2836,7 @@ FocusScope {
                         var keep = root.libCurrent ? root.libCurrent.id : "";
                         root.searchText = text;
                         root.rebuildLibrary(keep);
+                        if (root.ready) saveTimer.restart();
                     }
                     onActiveFocusChanged: {
                         if (activeFocus)
@@ -2725,7 +3170,7 @@ FocusScope {
                     id: originText
                     anchors.right: parent.right
                     anchors.verticalCenter: parent.verticalCenter
-                    text: modelData.origin === "kept" || modelData.origin === "catalogue" ? Lib.originLabel(modelData) : ""
+                    text: modelData.origin === "kept" || modelData.origin === "catalogue" || modelData.origin === "shelf" ? Lib.originLabel(modelData) : ""
                     color: root.rowFaint
                     font.family: root.sans
                     font.pixelSize: fs(20)
@@ -2997,7 +3442,7 @@ FocusScope {
                 Item { width: 1; height: px(8) }
                 Repeater {
                     model: root.overlay === "facts" ? root.checkDetail
-                        ? [{ t: root.checkDetail.label, q: false }, { t: root.checkDetail.detail, q: false }, { t: "Recorded observations apply to this setup and scene; they do not guarantee other sessions.", q: true }]
+                        ? [{ t: root.checkDetail.label, q: false }, { t: root.checkDetail.detail, q: false }, { t: root.checkDetailReturn === "guide" ? "Check the result in the running emulator." : "Recorded observations apply to this setup and scene; they do not guarantee other sessions.", q: true }]
                         : root.detailLines(root.current, root.personalRev) : root.overviewLines(root.current, root.personalRev)
                     delegate: Item {
                         width: parent.width; height: lineText.implicitHeight
@@ -3034,7 +3479,7 @@ FocusScope {
             width: root.width - px(128) - (panelPosition.visible ? panelPosition.width+px(24) : 0)
             text: root.panelTitle()
             maximumLineCount: 1
-            elide: Text.ElideRight
+            elide: root.overlay === "dischelp" ? Text.ElideMiddle : Text.ElideRight
             color: root.ink
             font.family: root.sans
             font.pixelSize: fs(40)
@@ -3057,7 +3502,10 @@ FocusScope {
             width: Math.min(root.width - px(128), px(860))
             visible: root.overlay === "storage"
             warning: root.light ? "#955100" : "#dca56a"
-            evidence: Lib.storageCapacity(root.rawEntries)
+            evidence: root.storageObservation.snapshot
+            evidenceStatus: root.storageObservation.status
+            volumeName: Lib.CAPACITY_NAMES[root.storageVolumeId]
+            selectedCategory: {var row=root.storageRows()[root.panelIndex];return row && row.category?row.category:"";}
             ink: root.ink; quiet: root.quiet; slab: root.slab; fontFamily: root.sans; size: fs(26)
         }
         ListView {
@@ -3072,11 +3520,20 @@ FocusScope {
             model: panel.visible ? root.panelRows(root.personalRev) : []
             currentIndex: root.panelIndex
             highlightRangeMode: ListView.ApplyRange
-            preferredHighlightBegin: panel.rowH
-            preferredHighlightEnd: height - panel.rowH
+            preferredHighlightBegin: Math.min(panel.rowH, Math.max(0, height - panel.rowH))
+            preferredHighlightEnd: Math.max(preferredHighlightBegin, height - panel.rowH)
             highlightMoveDuration: 0
             keyNavigationEnabled: false
             boundsBehavior: Flickable.StopAtBounds
+            // Wrapped explanations can shrink the viewport after selection.
+            function keepSelectionVisible() {
+                if (!visible || !count || currentIndex < 0) return;
+                forceLayout();
+                positionViewAtIndex(currentIndex, ListView.Contain);
+            }
+            onCurrentIndexChanged: Qt.callLater(keepSelectionVisible)
+            onHeightChanged: Qt.callLater(keepSelectionVisible)
+            onModelChanged: Qt.callLater(keepSelectionVisible)
 
             delegate: Item {
                 width: panelList.width
@@ -3134,6 +3591,62 @@ FocusScope {
         }
     }
 
+    Loader {
+        id:failurePreviewLoader
+        z:100
+        anchors.fill:parent;visible:root.overlay === "failurepreview"
+        active:visible;source:active?"FailurePreview.qml":""
+        onLoaded: {
+            item.report=Qt.binding(function(){return root.failurePreviewData;});
+            item.bridge=root.failureBridge;
+            item.sans=root.sans;item.unit=Qt.binding(function(){return root.s;});
+            item.textScale=Qt.binding(function(){return root.textScale;});item.usableHeight=Qt.binding(function(){return root.usableHeight;});
+            item.ground=Qt.binding(function(){return root.ground;});item.ink=Qt.binding(function(){return root.ink;});item.quiet=Qt.binding(function(){return root.quiet;});
+        }
+        onStatusChanged: if(status===Loader.Error){root.closeOverlay();root.say("The report preview could not open. Your files and progress were kept.");}
+    }
+    Connections {target:failurePreviewLoader.item;function onBack(){root.closeOverlay();}}
+    Connections {
+        target:root.failureBridge;ignoreUnknownSignals:true
+        function onDocumentCopyFinished(request,result){
+            // The system picker deactivates the launcher and closes its preview.
+            // Completion remains visible after returning to the preserved parent.
+            if(root.overlay!=="failurepreview")root.documentNotice=result && typeof result.message==="string"?result.message:"The document copy could not be verified. The private report was kept.";
+        }
+    }
+    Rectangle {
+        id:documentNoticePanel;objectName:"documentCopyNotice"
+        z:90;visible:root.documentNotice!=="" && root.overlay!=="failurepreview"
+        x:root.px(64);width:root.width-root.px(128)
+        height:Math.max(44,documentNoticeText.height+root.px(24))
+        y:root.usableHeight-root.px(192)-height
+        color:root.slab;border.width:Math.max(1,root.px(1));border.color:root.quiet
+        // This result cannot use the footer: Cloud/Downloads cover it and long
+        // receipts elide there. Keep full feedback until an owner action.
+        MouseArea {anchors.fill:parent;onClicked:root.documentNotice=""}
+        Text {
+            id:documentNoticeText;objectName:"documentCopyNoticeText"
+            x:root.px(16);anchors.verticalCenter:parent.verticalCenter
+            width:parent.width-documentDismiss.width-root.px(48)
+            text:root.documentNotice;textFormat:Text.PlainText;wrapMode:Text.Wrap
+            color:root.ink;font.family:root.sans;font.pixelSize:root.fs(20)
+        }
+        Item {
+            id:documentDismiss;objectName:"documentCopyNoticeDismiss";anchors.right:parent.right;anchors.rightMargin:root.px(12);anchors.verticalCenter:parent.verticalCenter
+            width:Math.max(44,documentDismissLabel.implicitWidth+root.px(16));height:Math.max(44,root.px(40))
+            Text {id:documentDismissLabel;anchors.centerIn:parent;text:"Dismiss";color:root.ink;font.family:root.sans;font.pixelSize:root.fs(20)}
+            MouseArea {anchors.fill:parent;onClicked:root.documentNotice=""}
+            Accessible.role:Accessible.Button
+            Accessible.name:"Dismiss document copy result"
+            Accessible.onPressAction:root.documentNotice=""
+        }
+    }
+    SaveCopyPicture {
+        anchors.fill:parent;visible:root.overlay === "copypicture"
+        source:root.saveCopyPictureSource;copy:root.saveCopyPictureRow;title:root.saveCopyTitle
+        sans:root.sans;ink:root.ink;quiet:root.quiet;unit:root.s;textScale:root.textScale;usableHeight:root.usableHeight
+    }
+
     StoppingNotebook {
         id:notebookPanel
         anchors.fill:parent;visible:root.overlay === "notebook"
@@ -3144,6 +3657,16 @@ FocusScope {
         onEditCheckpoint:root.openText("checkpoint",editionId)
         onChanged:root.loadStoppingCard(root.entryById[editionId],true)
         onClosed:{root.overlay=root.overlayReturn === "details"?"details":"";root.overlayReturn="";root.forceActiveFocus();root.dropKeyboard();}
+    }
+
+    InputProfileEditor {
+        id: inputProfilePanel
+        objectName: "inputProfilePanel"
+        width:parent.width;height:root.usableHeight-root.px(90)
+        visible:root.overlay === "inputprofile"
+        ground:root.ground;ink:root.ink;sans:root.sans;textScale:root.textScale;s:root.s
+        acceptLabel:root.kAccept;cancelLabel:root.kCancel
+        onClosed:{root.overlay="guide";root.forceActiveFocus();}
     }
 
     ControllerCheck {
@@ -3176,7 +3699,8 @@ FocusScope {
             spacing: px(14)
 
             Text {
-                text: root.textMode === "checkpoint" ? "Stopping note" : "New collection"
+                text: root.textMode === "checkpoint" ? "Stopping note" : root.textMode === "shelf-new" ? "New shelf"
+                      : root.textMode === "shelf-rename" ? "Rename shelf" : "New collection"
                 color: root.ink
                 font.family: root.sans
                 font.pixelSize: fs(40)
@@ -3185,7 +3709,9 @@ FocusScope {
             Text {
                 width: parent.width
                 visible: text !== ""
-                text: root.entryById[root.textTarget] ? root.entryById[root.textTarget].title : ""
+                text: root.textMode === "shelf-new" ? root.shelfEditionLabel(root.shelfDraftEntry)
+                      : root.textMode === "shelf-rename" ? "Its games stay on it."
+                      : root.entryById[root.textTarget] ? root.entryById[root.textTarget].title : ""
                 color: root.quiet
                 font.family: root.sans
                 font.pixelSize: fs(26)
@@ -3205,7 +3731,7 @@ FocusScope {
                     font.family: root.sans
                     font.pixelSize: fs(30)
                     clip: true
-                    maximumLength: 280
+                    maximumLength: root.textMode.indexOf("shelf-") === 0 ? Discovery.NAME_MAX : 280
                     onActiveFocusChanged: {
                         if (activeFocus)
                             return;
@@ -3226,7 +3752,7 @@ FocusScope {
                 Text {
                     visible: textInput.text === "" && !textInput.activeFocus
                     anchors.verticalCenter: parent.verticalCenter
-                    text: root.textMode === "checkpoint" ? "Where you stopped" : "Name"
+                    text: root.textMode === "checkpoint" ? "Where you stopped" : root.textMode.indexOf("shelf-") === 0 ? "A feeling or purpose" : "Name"
                     color: root.faint
                     font.family: root.sans
                     font.pixelSize: fs(30)
@@ -3250,6 +3776,8 @@ FocusScope {
                 wrapMode: Text.Wrap
                 text: root.textMode === "checkpoint"
                       ? "Write where you stopped. Saved here first, synced when connected. Leave it empty to clear it."
+                      : root.textMode.indexOf("shelf-") === 0
+                      ? "Your own label, like “dreamlike” or “ten-minute adrenaline”. Saved on this device only and never shown as a suggestion."
                       : "A small group you keep, named for the reason it exists."
                 color: root.faint
                 font.family: root.sans
@@ -3384,9 +3912,12 @@ FocusScope {
 
         Text {
             id: footerNotice
+            objectName: "footerNotice"
             anchors.right: parent.right
-            visible: root.notice !== ""
-            width: Math.min(implicitWidth, parent.width * 0.5)
+            visible: root.notice !== "" && width > 0
+            // Status text yields to every primary/reverse action, including long mapped labels.
+            width: Math.max(0,Math.min(implicitWidth,parent.width*0.5,
+                root.overlay === "details" ? parent.width*0.5 : parent.width-primaryHints.width-px(24)))
             horizontalAlignment: Text.AlignRight
             elide: Text.ElideRight
             text: root.notice
@@ -3458,8 +3989,12 @@ FocusScope {
         id: cloudPanel
         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
         height: root.usableHeight
-        visible: root.overlay === "cloud"
+        visible: root.overlay === "cloud" || root.overlay === "failurepreview" && root.failureReturn === "cloud"
+        enabled: root.overlay === "cloud"
+        failureBridge:root.failureBridge
+        onReviewFailure:root.openCloudFailure(editionId,attempt)
         cloud: root.cloudBridge
+        preparePlay: function() { return root.prepareLaunch(); }
         keyMap: api.keys
         ground: root.ground
         ink: root.ink

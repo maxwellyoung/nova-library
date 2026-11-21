@@ -10,6 +10,17 @@ Cloud entries use the normal search, filters, console browsing, Details and loca
 
 Immediately before launch, after hashing, `launchPrepared` supplies the exact installed identity for the existing ROM recorder. Android uses `MainActivity.launchAmCommand` with a literal allowlisted argv array, preserving the existing launch/recorder boundary. No server command is executed. Only Android's accepted result emits `launchAccepted`; a desktop signal is not a successful device launch. Actual foreground intervals, emulator return and central media ingestion require their own runtime checks.
 
+The theme stages Cloud recorder metadata only when the optional private bridge
+provides both `beginRomLaunch(edition, title, platform)` and
+`cancelRomLaunch(token)`. The token owns one in-memory pre-dispatch stage.
+Cancellation, refusal, bridge replacement or theme teardown clears only that
+stage, preserving newer stages, pending observations and the existing journal.
+The platform consumes the stage before accepting a request and omits its token
+from pending/history records. Older bridges do not use the unscoped legacy
+staging call for Cloud launches; accepted-opening recents remain separate.
+Stage tokens are neither caller authentication nor gameplay evidence. Local ROM
+staging and existing recording permissions are unchanged.
+
 `launchChecking` exposes pre-launch verification. Leaving the frontend cancels this pending launch check, without cancelling an ordinary download. Catalogue rebuilds are debounced, ignore scan-only timestamps and retain the originating game. These source/host checks do not establish Android background-download persistence or suspend/resume behavior.
 
 The first adapter targets RomM **5.4.1**'s `/api/roms` paged catalogue and its individual-file download endpoint, `/api/roms/{file_id}/files/content/{file_name}`. It accepts an origin and a separately scoped ROM-read token; credentials never enter QML, catalogue JSON, SQLite, URLs or logs. Redirects are refused. HTTP is limited to loopback and Tailscale addresses; HTTPS is preferred.
@@ -44,6 +55,58 @@ Older bridges without these facts offer Check download rather than promising
 Resume. Active transfer labels are separate from interrupted files. A blocked
 resume still permits a separate cleanup review, whose existing runtime/safety
 guards remain mandatory; this does not enable Android deletion.
+
+### Bounded connection recovery
+
+During an explicitly started install, the client may continue one interrupted
+payload automatically. This is one application-level retry budget for the whole
+game, not one per file, and it never starts another game by itself. The existing
+explicit queue may continue to its next job only after the current game passes.
+
+The only eligible signal is Qt's RemoteHostClosedError after an accepted 200 or
+exact 206 response has appended some, but not all, of the expected bytes. A trusted
+foreground-download adapter must still say Library is active. The ownership
+plan, file set, storage availability and remaining capacity are checked before
+announcing the retry and again on its queued continuation. The current prefix is
+kept; the existing Range/Content-Range and final checksum checks still apply.
+
+Cancellation, loss of foreground, changed/linked/unrecognised retained files,
+extra files (including saves), no progress, HTTP/auth/TLS errors, wrong response
+length, ignored/malformed Range and checksum failures receive no automatic
+repair. An unknown foreground adapter also refuses it. A second interruption
+stops with partial data retained; a later explicit resume starts a new install
+attempt. Restart does not resume a queue without that explicit action.
+
+The existing status text reports the bounded attempt. It never claims that an
+interrupted prefix is verified, that a save was made, or that a cloud save was
+restored. This feature does not delete corrupt bytes, alter routes/settings,
+reset a prefix, change drivers, touch saves or implement privileged repairs.
+Those require their own preview, checkpoint, rollback and runtime proof.
+
+### Review a download before adding it
+
+`reviewVersion == 1` advertises `inspectDownload(id)` and `downloadReview(id)`.
+Inspection fetches a missing RomM detail record and updates the private metadata
+cache only. It never calls install, queues a job, creates a ROM directory or
+fetches game payloads. `inspectingDownload` distinguishes this request from a
+transfer. Leaving the panel does not cancel a metadata request; its eventual
+completion cannot reopen the review or start a download. X can retry a failed
+inspection, while the ordinary Cloud Pause action can cancel the request.
+
+The review returns only the checked file names, sizes, roles, entry name, opaque
+content identity and existing storage/recovery facts. Endpoints, credentials and
+storage paths stay native. The UI freezes the reviewed descriptor and asks for
+Review again after a changed identity/title. Confirmation rechecks that identity,
+current storage and retained-file blockers before entering the existing pinned
+queue/install boundary. Space is measured again by installation, never reserved.
+The queue remains a separately explicit batch-start surface; existing jobs do
+not gain a new consent requirement on upgrade.
+
+A playlist is shown as a dependency, not an optional tiny download. All files
+still participate in activation and offline checksum checks. Smaller selections
+are deliberately unavailable: generic RomM file membership does not establish
+safe disc-switch, boot or save-name semantics for a partial set. No new server
+schema, service deployment or runtime support is implied by this UI.
 
 ### Review cleanup before removal
 
@@ -128,3 +191,47 @@ This is an on-device queue, without background execution, notifications or new
 permissions. It is not the planned household queue or automatic cloud-save sync.
 Android lifecycle, actual controller input, interruption/return and throughput
 remain physical-device gates; the host HTTP and QML tests do not establish them.
+
+The selected ROM root must already be a present, safe directory. Install and
+queued retry preserve the same missing-storage refusal as preflight: they do not
+create a missing selected root on its containing filesystem. Managed download
+and partial directories can still be created inside that present root. Restore
+or deliberately provision/review the selected storage before retrying. This
+path check does not authenticate a physical card, identify a replacement card,
+or establish hot-swap behavior on Android.
+
+The Downloaded state and queue completion text describe checked download files.
+Runtime opening, real offline play and save loading have separate acceptance gates.
+
+### Opening a checked download
+
+Play rechecks the foreground window before hashing, when checksum callbacks
+return, and after each launch-preparation/request signal. Those direct Qt signal
+handlers can cancel synchronously. Cancellation or foreground loss stops before
+the platform dispatcher; returning to Library does not retry an old request.
+A real dispatcher without a foreground observer is refused. The Android factory
+supplies both the existing Qt application-state observer and the literal
+file/core JNI dispatcher. Desktop observer-only fixtures still make no Android
+dispatch or accepted-launch claim.
+
+The platform call is an injected boundary, like the existing foreground/idle
+observers, so native tests can count its calls without launching a game.
+`launchAccepted` means the platform accepted this request; the UI explicitly
+leaves game boot and save loading unconfirmed. A foreground window does not
+establish emulator idle or authorize removal. No save/sync/permission policy is
+changed by these launch checks.
+
+Managed removal refreshes Downloads availability after detaching a reviewed folder,
+including a refusal/partial cleanup that leaves a detached recovery folder. A
+removed payload cannot remain Downloaded/Play merely because its queue entry was
+already visible. The queue file and selected edition stay; reinstallation requires
+a fresh deliberate Retry and the usual file/capacity/checksum guards. This does not
+supply trusted Android idle, start a queue automatically or widen removal targets.
+
+A `.removed` or `.partial.removed` location blocks a new download for an
+uninstalled edition. Presence alone does not establish ownership or the cause of
+an interrupted removal. The existing plan/game/queue surfaces report the fixed
+refusal without reading those locations' contents or deleting, moving or restoring
+them. Directories, files, links (including dangling links) and FIFOs are kept for
+review. A valid current installed copy remains available and is never replaced by
+this guard. Actual recovery/idle/device review is still required.

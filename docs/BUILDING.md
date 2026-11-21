@@ -157,7 +157,18 @@ those capabilities or certify gameplay.
 ## Source CI boundary
 
 The `Source contracts` workflow runs Python and JavaScript contracts, the privacy
-guard and fresh pinned native/theme preparation. It does **not** compile Qt,
+guard and fresh pinned native/theme preparation with Cloud, notebook, controller
+check, PC runtime and Save copies selected together. This combination includes
+every optional context; it does not change the preparation tool's defaults.
+The matching operator command is:
+
+```sh
+python3 tools/prepare_native.py prepare ../pegasus-upstream --output ../nova-paired-all \
+  --rom-cloud --stopping-notes --controller-check --pc-runtime --save-copies
+python3 tools/prepare_native.py verify ../nova-paired-all
+```
+
+The workflow does **not** compile Qt,
 produce an APK, run QML visually or certify a physical device. The first hosted
 workflow run remains a separate check after publication approval.
 
@@ -178,3 +189,42 @@ context. It adds no Android permission or service. It may be combined with
 `--rom-cloud --stopping-notes --controller-check`; the paired manifest records
 all inputs. The public recipe remains separate from a recorder-preserving
 personal APK. See [the PC adapter contract](../native/pcgames/README.md).
+
+The optional `--checked-memory` flag also replaces the exact pinned theme-memory
+implementation with an atomic, acknowledged writer. It is required for the input-
+preferences editor; see [checked memory](../native/theme-memory/README.md). It
+changes no permissions and does not apply input preferences to a game.
+
+On checked-memory builds, favourites, session labels and appearance wait for the
+acknowledged commit before changing their displayed state. Refused writes keep
+the previous choices; a failed favourite commit also sends no bridge pin action.
+Unreadable favourite/session records remain unavailable. The preference journey
+fixture exercises the real native store, locked writes, retry, clearing, external
+changes and a fresh-process reopen. Legacy builds retain their original void
+writer and cannot acknowledge persistence through that API.
+
+The collection return-focus smoke recreates the real theme object while retaining
+its preferences, including reordered/removed members and legacy saved focus:
+
+```sh
+python3 tools/smoke_focus.py --host /path/to/existing/save-copies-theme-host \
+  --bundle /private/synthetic-save-copies-v1 --output /private/new-focus-results
+```
+
+This fixture checks QML recreation and Back behavior. Native process teardown and
+physical external-game return remain separate integration checks.
+
+On checked-memory builds, deliberate local, integrated Cloud, Cloud-panel, Downloads and PC
+launches wait for a committed return position. View, edition/collection focus and Library search/filter/sort
+share one atomic record; older separate view preferences remain readable. A refused
+write stops dispatch with a visible message, and retry uses the same selection.
+Cloud accepted-opening history also publishes only after its checked commit.
+`smoke_preferences.py --scenario launch-refusal` uses the actual native store and
+file locks, then retries and checks refusal after an external file edit. Dispatch
+callbacks are synthetic; gameplay and actual runtime handoff remain separate.
+
+The optional `--failure-reports` adapter requires `--save-copies`. When `--rom-cloud` is also selected, the prepared context connects typed native Cloud Play observations to the same bounded private preview/export. The source CI pairing includes these flags together; preparation does not prove compilation, installation or device acceptance.
+
+This adapter also binds the compiled selected-theme Loader and embeds the standalone report preview in frontend resources. It supports the pinned upstream ThemeError source and the exact retained guarded recovery variant; it refuses changed error-screen source before replacing it. The external preview and its compiled copy are both bound by the preparation manifest. The fixed theme-load observation omits raw errors/logs/config and leaves cause and source/build/runtime identity unknown. Neither a compiled review build nor desktop fixtures prove physical Home recovery, Android document-provider behavior or unaided acceptance.
+
+The failure-report source also includes an Android create-document copy after a private export. Its qmake/CMake module explicitly links the already supported Qt AndroidExtras dependency, including when Cloud is omitted. This adds no manifest/Java/provider/permission source. Compilation and desktop injected-target checks do not prove real chooser/provider/lifecycle acceptance.

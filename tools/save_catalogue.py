@@ -324,12 +324,43 @@ class Catalogue:
             return entries
 
     def rename(self, identifier, name, *, pinned):
+        """Immediate edit; clients showing a preview use plan_rename/apply instead."""
+        self.apply(self.plan_rename(identifier, name, pinned=pinned))
+
+    def _rename_plan(self, identifier, name, pinned):
         named(name, pinned)
-        with self._transaction(write=True):
-            self._row(identifier, active=True)
-            self.db.execute('UPDATE records SET name=?,pinned=? WHERE id=?', (name, int(pinned), identifier))
-            require(pinned or len(self._quick(self._identity(self._row(identifier)))) <= self.retention['quickSlots'],
-                    'Unpinning would overflow quick-save slots; review rotation first')
+        row = self._row(identifier, active=True)
+        identity = passport.identity(self._verify(row))
+        require(pinned or len(self._quick(identity)) + int(bool(row['pinned'])) <= self.retention['quickSlots'],
+                'Unpinning would overflow quick-save slots; review rotation first')
+        result = {'schemaVersion': 1, 'catalogueId': self._meta('catalogueId'),
+                  'generation': self._meta('generation'), 'action': 'rename',
+                  'checkpointId': row['id'], 'passportSha256': row['archive_sha'], 'identity': identity,
+                  'before': {'name': row['name'], 'pinned': bool(row['pinned'])},
+                  'after': {'name': name, 'pinned': pinned}}
+        result['token'] = hashlib.sha256(encoded(result).encode()).hexdigest()
+        return result
+
+    def plan_rename(self, identifier, name, *, pinned):
+        """Review a local name/pin edit without copying or changing its passport."""
+        with self._transaction():
+            return self._rename_plan(identifier, name, pinned)
+
+    def _apply_rename(self, plan):
+        require(set(plan) == {'schemaVersion', 'catalogueId', 'generation', 'action', 'checkpointId',
+                              'passportSha256', 'identity', 'before', 'after', 'token'}
+                and type(plan['schemaVersion']) is int and plan['schemaVersion'] == 1
+                and type(plan['generation']) is int
+                and all(isinstance(plan[field], dict) and set(plan[field]) == {'name', 'pinned'}
+                        for field in ('before', 'after')), 'Invalid metadata plan')
+        # Validate both sides before equality: bool/int equality must not accept a malformed preview.
+        for field in ('before', 'after'):
+            named(plan[field]['name'], plan[field]['pinned'])
+        require(self._rename_plan(plan['checkpointId'], plan['after']['name'], plan['after']['pinned']) == plan,
+                'Metadata preview changed; review it again')
+        self.db.execute('UPDATE records SET name=?,pinned=? WHERE id=?',
+                        (plan['after']['name'], int(plan['after']['pinned']), plan['checkpointId']))
+        return [plan['checkpointId']]
 
     def _plan(self, action, identifiers):
         require(isinstance(action, str) and action in {'trash', 'purge'}
@@ -373,6 +404,8 @@ class Catalogue:
 
     def apply(self, plan):
         with self._transaction(write=True):
+            if isinstance(plan, dict) and plan.get('action') == 'rename':
+                return self._apply_rename(plan)
             require(isinstance(plan, dict) and set(plan) == {'schemaVersion', 'catalogueId', 'generation', 'action', 'items', 'token', 'undoForDays', 'permanent'}
                     and type(plan['schemaVersion']) is int and plan['schemaVersion'] == 1
                     and type(plan['generation']) is int

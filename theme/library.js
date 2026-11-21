@@ -369,6 +369,7 @@ function makeEntry(game) {
         appPackage: extra(game, "app-package"),
         installations: installationData(extra(game, "installations")),
         capacity: capacityData(extra(game, "storage-volume")),
+        capacities: capacityVolumesData(extra(game, "storage-volumes")),
         novaGameplayNote: extra(game, "nova-gameplay-note"),
         novaGameplaySource: extra(game, "nova-gameplay-source"),
         novaGameplayObservedAt: extra(game, "nova-gameplay-observed-at"),
@@ -788,6 +789,42 @@ function homeShelf(entries, pins, ownerIds) {
     return {entries:out,captions:captions,gaps:gaps,fallback:fallback};
 }
 
+// Bounded discovery uses explicit choices and local catalogue routes. Time played
+// and imported recommendation scores never stand in for liking a game.
+function choiceAvailable(entry) {
+    if (!entry || !entry.id || entry.systemId === "androidapps" || entry.systemId === "emulators") return false;
+    var members = entry.discMembers || [entry];
+    return members.some(function(e) { return e.launchable === true && !e.missing && e.game && !e.game.missing; });
+}
+
+function choicePool(entries, pins, rotationIds, ownerIds) {
+    var seen = {}, out = [];
+    groupEntries(entries).forEach(function(e) {
+        var key = presentationKey(e);
+        if (!choiceAvailable(e) || !key || seen[key]) return;
+        seen[key] = true;
+        var ids = (e.discMembers || [e]).map(function(m) { return m.id; });
+        function includes(list) { return ids.some(function(id) { return (list || []).indexOf(id) >= 0; }); }
+        var rank = includes(rotationIds) ? 0 : includes(pins) ? 1 : includes(ownerIds) ? 2 : 3;
+        var reason = rank === 0 ? "In your rotation" : rank === 1
+            ? (e.discMembers ? "A disc you favourited" : "You favourited this edition")
+            : rank === 2 ? "Handpicked for Home" : "Marked ready in Library";
+        out.push({key:key, entry:e, reason:reason, rank:rank});
+    });
+    return out.sort(function(a,b) {
+        return a.rank-b.rank || a.entry.sortKey.localeCompare(b.entry.sortKey) || a.key.localeCompare(b.key);
+    });
+}
+
+function threeChoices(entries, pins, rotationIds, ownerIds, offset) {
+    var pool = choicePool(entries, pins, rotationIds, ownerIds);
+    offset = typeof offset === "number" && isFinite(offset) && offset >= 0 && Math.floor(offset) === offset ? offset : 0;
+    offset = pool.length ? offset % pool.length : 0;
+    var chosen = [];
+    for (var i=0; i<Math.min(3,pool.length); i++) chosen.push(pool[(offset+i)%pool.length]);
+    return {total:pool.length, offset:offset, nextOffset:pool.length ? (offset+(pool.length>3?3:1))%pool.length : 0, choices:chosen};
+}
+
 // Explicit local session preferences. These describe a comfortable play window,
 // never a game's completion time or a duration inferred from telemetry.
 var SESSION_WINDOWS = ["five", "twenty", "evening"];
@@ -1175,6 +1212,7 @@ function threadNamesFor(e, threads) {
 }
 
 function originLabel(t) {
+    if (t.origin === "shelf") return "Yours";
     if (t.origin === "kept") return "Kept";
     if (t.origin === "catalogue") return "Catalogue";
     return "Suggested";
@@ -1247,24 +1285,80 @@ function libraryBadge(e, sortValue) {
     return installBadge(e) + (!e.launchable && installation(e, "nova").state === "installed" ? " · no route" : "");
 }
 
-function capacityData(raw) {
-    if (!raw || raw.length > 4096) return null;
-    try {
-        var v = JSON.parse(raw);
-        if (!v || v.id !== "internal-data" || !v.source || dateEvidenceText(v.observedAt) === "Date unknown") return null;
-        for (var i = 0; i < 3; i++) {
-            var n = v[["total", "used", "free"][i]];
-            if (typeof n !== "number" || !isFinite(n) || Math.floor(n) !== n || n < 0 || n > 9007199254740991) return null;
-        }
-        return v.total > 0 && v.used + v.free <= v.total ? v : null;
-    } catch (err) { return null; }
+var CAPACITY_IDS = ["internal-data", "sd-card"];
+var CAPACITY_NAMES = {"internal-data":"Internal storage", "sd-card":"microSD"};
+var CAPACITY_KINDS = ["game-data", "app-data", "cache", "save-data"];
+var CAPACITY_LABELS = {"game-data":"Game data", "app-data":"App data", cache:"Caches", "save-data":"Saves", unclassified:"Unclassified used", unavailable:"Unavailable capacity", free:"Free"};
+function capacityBytes(value) {return typeof value === "number" && isFinite(value) && Math.floor(value)===value && value>=0 && value<=9007199254740991;}
+function capacityValue(v) {
+    if(!v || Array.isArray(v) || CAPACITY_IDS.indexOf(v.id)<0 || typeof v.source!=="string" || !v.source.trim()
+            || v.source.length>200 || /[<>\x00-\x1f\x7f]/.test(v.source)
+            || typeof v.observedAt!=="string" || v.observedAt.length>40 || dateEvidenceText(v.observedAt)==="Date unknown" || time(v.observedAt)>Date.now())return null;
+    if(!capacityBytes(v.total) || !capacityBytes(v.used) || !capacityBytes(v.free) || !v.total || v.used+v.free>v.total)return null;
+    var out={id:v.id,total:v.total,used:v.used,free:v.free,source:v.source.trim(),observedAt:v.observedAt,breakdownState:"unmeasured"};
+    if(v.breakdown===undefined)return out;
+    out.breakdownState="invalid";out.breakdown=null;
+    var b=v.breakdown;
+    if(!b || Array.isArray(b) || Object.keys(b).length!==3 || b.basis!=="allocated-bytes" || b.disjoint!==true
+            || !b.categories || typeof b.categories!=="object" || Array.isArray(b.categories))return out;
+    var keys=Object.keys(b.categories),categories={},total=0;
+    if(keys.some(function(k){return CAPACITY_KINDS.indexOf(k)<0 || !capacityBytes(b.categories[k]);}))return out;
+    CAPACITY_KINDS.forEach(function(k){if(keys.indexOf(k)>=0){categories[k]=b.categories[k];total+=b.categories[k];}});
+    if(total>v.used)return out;
+    out.breakdown={basis:"allocated-bytes",disjoint:true,categories:categories};out.breakdownState="measured";return out;
 }
-
-function storageCapacity(entries) {
-    var captured = entries.map(function(e) { return e.capacity; }).filter(function(v) { return v !== null && v !== undefined; });
-    captured.sort(function(a, b) { return time(b.observedAt) - time(a.observedAt); });
-    if (!captured.length) return null;
-    var newest = captured[0];
-    if (captured.some(function(v) { return v.observedAt === newest.observedAt && (v.total !== newest.total || v.used !== newest.used || v.free !== newest.free); })) return null;
-    return newest;
+function capacityData(raw) {
+    if(typeof raw!=="string" || !raw || raw.length>4096)return null;
+    try {var v=capacityValue(JSON.parse(raw));return v && v.id==="internal-data"?v:null;}catch(error){return null;}
+}
+function capacityVolumesData(raw) {
+    if(typeof raw!=="string" || !raw || raw.length>16384)return [];
+    try {
+        var values=JSON.parse(raw),seen=[];
+        if(!Array.isArray(values) || values.length>2)return [];
+        var out=[];
+        for(var i=0;i<values.length;i++){
+            var value=capacityValue(values[i]);if(!value || seen.indexOf(value.id)>=0)return [];
+            seen.push(value.id);out.push(value);
+        }
+        return out;
+    }catch(error){return [];}
+}
+function capacityEvidence(entries,id) {
+    id=id || "internal-data";
+    if(CAPACITY_IDS.indexOf(id)<0)return {status:"unknown",snapshot:null};
+    var captured=[];
+    entries.forEach(function(e){
+        var values=[e.capacity].concat(Array.isArray(e.capacities)?e.capacities:[]);
+        values.forEach(function(v){var c=capacityValue(v);if(c && c.id===id)captured.push(c);});
+    });
+    captured.sort(function(a,b){return time(b.observedAt)-time(a.observedAt);});
+    if(!captured.length)return {status:"unknown",snapshot:null};
+    var newest=captured[0],current=captured.filter(function(v){return time(v.observedAt)===time(newest.observedAt);});
+    if(current.some(function(v){return v.total!==newest.total || v.used!==newest.used || v.free!==newest.free;}))return {status:"conflict",snapshot:null};
+    var measured=current.filter(function(v){return v.breakdownState==="measured";}),invalid=current.some(function(v){return v.breakdownState==="invalid";});
+    if(measured.length){
+        if(invalid || measured.some(function(v){return JSON.stringify(v.breakdown)!==JSON.stringify(measured[0].breakdown);})){
+            newest.breakdown=null;newest.breakdownState="conflict";
+        }else {newest.breakdown=measured[0].breakdown;newest.breakdownState="measured";}
+    }else if(invalid){newest.breakdown=null;newest.breakdownState="invalid";}
+    return {status:"known",snapshot:newest};
+}
+function storageCapacity(entries,id) {return capacityEvidence(entries,id).snapshot;}
+function capacityRows(snapshot) {
+    var measured=snapshot && snapshot.breakdownState==="measured"?snapshot.breakdown.categories:{},sum=0;
+    var rows=CAPACITY_KINDS.map(function(kind){
+        var known=Object.prototype.hasOwnProperty.call(measured,kind),bytes=known?measured[kind]:null;
+        if(known)sum+=bytes;
+        return {label:CAPACITY_LABELS[kind],category:kind,bytes:bytes,value:known?bytesText(bytes):"Not measured"};
+    });
+    rows.push({label:CAPACITY_LABELS.unclassified,category:"unclassified",bytes:snapshot?snapshot.used-sum:null,value:snapshot?bytesText(snapshot.used-sum):"Not measured"});
+    rows.push({label:CAPACITY_LABELS.unavailable,category:"unavailable",bytes:snapshot?snapshot.total-snapshot.used-snapshot.free:null,value:snapshot?bytesText(snapshot.total-snapshot.used-snapshot.free):"Not measured"});
+    return rows;
+}
+function capacitySegments(snapshot) {
+    if(!snapshot)return [];
+    var parts=capacityRows(snapshot).filter(function(r){return r.bytes!==null;}),offset=0;
+    parts.push({category:"free",bytes:snapshot.free});
+    return parts.map(function(p){var out={id:p.category,bytes:p.bytes,offset:offset,fraction:p.bytes/snapshot.total};offset+=p.bytes;return out;});
 }

@@ -10,6 +10,7 @@ Modified source notice: Nova's native changes and this publication layout were p
 | `tools/`, repository `tests/`, demo wrapper and generated SVG/PNG design | Nova publication tooling | Standalone synthetic fixtures and checks; no personal catalogue |
 | `assets/platforms/`, generated `theme/PlatformMarks.js` | Pinned Simple Icons 13.21.0, Font Awesome Free 6.7.2 and RetroArch assets Monochrome | Original vectors, source URLs, SHA-256 digests and full collection notices retained; geometry converted for Qt Canvas. Simple Icons collection: CC0-1.0. Xbox and console gamepad: Fonticons, Inc., CC BY 4.0. PC, DS, N64, SNES, NES, Game Boy, Game Boy Color, Game Boy Advance and Dreamcast: Libretro contributors, CC BY 4.0, https://creativecommons.org/licenses/by/4.0/ . Platform trademarks remain with their owners; no endorsement implied |
 | `LICENSE.md` | Pegasus Frontend license | Preserved verbatim, including supplementary terms |
+| `native/retroarch-safe-load/` | Pinned RetroArch task source, Libretro/RetroArch contributors; Nova guard | GPL-3.0-or-later. Exact excerpts retain the original notice; source/patch/result hashes are in `source.json`. Host fixtures and source candidate only, not a distributed emulator binary |
 
 Upstream: https://github.com/mmatyas/pegasus-frontend.git
 
@@ -30,3 +31,18 @@ No source claim here covers the optional private service or its deployment. No c
 RetroArch assets Monochrome, Libretro contributors, pinned commit `d9f969054dc7fbb6fa89519036d2b971e0855b51`. Original SVG files, URLs and SHA-256 values are retained in `assets/platforms/sources.json`; full CC BY 4.0 text is in `assets/platforms/RetroArch-COPYING.txt`. Covers PC, DS, N64, SNES, NES, Game Boy, Game Boy Color, Game Boy Advance and Dreamcast. Shapes and transforms are converted to Canvas commands, uniformly scaled to a shared optical keyline and recoloured to the theme ink; source proportions and path geometry are retained. No endorsement or trademark licence is implied. Source: https://github.com/libretro/retroarch-assets .
 
 Console navigation uses Font Awesome Free 6.7.2 `gamepad`, Fonticons, Inc., CC BY 4.0, pinned to the same commit as Xbox. Its original SVG, URL and SHA are retained; only theme-ink recolouring and uniform Canvas scaling are applied.
+
+## Checked theme memory
+
+`native/theme-memory/Memory.h`, `Memory.cpp` and their `upstream/` originals derive
+from Pegasus at commit `5d58223e58f84afb31d5d14a67438841b981a6fa`, with original
+GPL-3.0-or-later notices retained. Nova changes on 2026-11-11 add checked reads,
+atomic acknowledged writes and refusal preservation. Pinned input hashes are in
+`native/theme-memory/upstream.json`; no corresponding installed-binary claim is made.
+
+## RetroArch analog input verification
+
+`native/retroarch-input/input_joypad_axis.inc` is an unchanged function excerpt
+from Libretro RetroArch commit `69a4f0ea1e8aaf442ae4858f2e7f2b31a1776576`. Original
+GPL notices and exact file/function hashes accompany it. The host test supplies
+a synthetic axis callback; it does not recreate or claim a new emulator engine.

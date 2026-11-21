@@ -16,6 +16,8 @@ struct RomCloudConfig {
     std::function<QString()> removalBlocker;
     // A foreground download window is distinct from emulator-idle/removal proof.
     std::function<bool()> downloadWindow;
+    // The platform dispatches literal verified file/core arguments, never server commands.
+    std::function<bool(const QString&,const QString&)> launch;
 };
 class RomCloud : public QObject {
     Q_OBJECT
@@ -27,9 +29,12 @@ class RomCloud : public QObject {
     Q_PROPERTY(int catalogueVersion READ catalogueVersion CONSTANT)
     Q_PROPERTY(bool launchChecking READ launchChecking NOTIFY changed)
     Q_PROPERTY(int queueVersion READ queueVersion CONSTANT)
+    Q_PROPERTY(int reviewVersion READ reviewVersion CONSTANT)
+    Q_PROPERTY(bool inspectingDownload READ inspectingDownload NOTIFY changed)
     Q_PROPERTY(QVariantList downloads READ downloads NOTIFY queueChanged)
     Q_PROPERTY(bool queueRunning READ queueRunning NOTIFY queueChanged)
     Q_PROPERTY(QString queueMessage READ queueMessage NOTIFY queueChanged)
+    Q_PROPERTY(QVariantMap playFailure READ playFailure NOTIFY changed)
 public:
     explicit RomCloud(QObject* parent = nullptr);
     RomCloud(const RomCloudConfig&, QObject* parent = nullptr);
@@ -42,9 +47,12 @@ public:
     int catalogueVersion() const { return 1; }
     bool launchChecking() const { return m_launchChecking; }
     int queueVersion() const { return 1; }
+    int reviewVersion() const { return 1; }
+    bool inspectingDownload() const { return m_inspectingDownload; }
     QVariantList downloads() const;
     bool queueRunning() const { return m_queueRunning; }
     QString queueMessage() const { return m_queueMessage; }
+    QVariantMap playFailure() const { return m_playFailure; }
     Q_INVOKABLE bool enqueueDownload(int id);
     Q_INVOKABLE void startDownloads(int firstId = 0);
     Q_INVOKABLE void pauseDownloads();
@@ -57,6 +65,8 @@ public:
     Q_INVOKABLE void play(int id);
     Q_INVOKABLE void requestCover(int id);
     Q_INVOKABLE QVariantMap installPlan(int id) const;
+    Q_INVOKABLE void inspectDownload(int id);
+    Q_INVOKABLE QVariantMap downloadReview(int id) const;
     Q_INVOKABLE QVariantMap removalPlan(int id) const;
     Q_INVOKABLE QVariantMap cleanupPlan(int installId) const;
     static bool allowedEndpoint(const QUrl&);
@@ -69,15 +79,20 @@ signals:
     void launchRequested(const QString& path, const QString& core);
     void launchPrepared(const QString& editionId, const QString& title, const QString& platform);
     void launchAccepted(const QString& editionId);
+    // Fixed result vocabulary and an attempt token; no paths, titles or server text.
+    void playObserved(const QString& editionId, const QString& attempt, const QString& code);
 private:
     void loadCache();
     bool writeCache();
     void page(int offset);
-    void details(int id);
+    void details(int id, bool startInstall = true);
     void nextFile();
     void verify(const QString&, const QByteArray&, const std::function<void(bool)>&);
+    QString launchBlocker() const;
     void fail(const QString&);
+    void failPlay(const QString& message, const QString& code);
     QString gamePath(int id) const;
+    bool retainedRemoval(int id) const;
     QVariantMap installedManifest(int id) const;
     bool ownedInstalled(int id) const;
     QVariantMap partialPlan(const QVariantMap& game) const;
@@ -103,13 +118,18 @@ private:
     bool m_busy = false;
     bool m_cancelled = false;
     bool m_launchChecking = false;
+    bool m_inspectingDownload = false;
     double m_progress = 0;
     int m_installId = 0, m_fileIndex = 0;
+    int m_safeRetriesRemaining = 0;
     qint64 m_completed = 0, m_total = 0;
     QVariantList m_downloads;
     QByteArray m_queueFingerprint;
     bool m_queueReadable = true, m_queueRunning = false, m_queuePauseRequested = false;
     int m_queueActiveId = 0, m_queuePreferredId = 0;
     QString m_queueMessage = QStringLiteral("Downloads are paused. Start when ready.");
+    QVariantMap m_playFailure;
+    QString m_playEdition, m_playAttempt;
+    int m_playId = 0;
 };
 }

@@ -64,6 +64,22 @@ class NativePrepareTests(unittest.TestCase):
         (backend / 'backend.pro').write_text('TEMPLATE = lib\nSOURCES += \\\n    library/DeviceLibrary.cpp \\\n    library/PlatformEnrollment.cpp \\\n    Backend.cpp\nHEADERS += \\\n    library/DeviceLibrary.h \\\n    Backend.h\n')
         (backend / 'CMakeLists.txt').write_text('add_library(pegasus-backend\n    library/PlatformEnrollment.cpp\n)\n')
         (backend / 'library/DeviceLibrary.h').write_text('// fixture native bridge\n')
+        frontend = self.upstream / 'src/frontend'
+        (frontend / 'messages').mkdir(parents=True)
+        shutil.copyfile(ROOT / 'native/failure-reports/upstream/ThemeError.qml', frontend / 'messages/ThemeError.qml')
+        (frontend / 'frontend.qrc').write_text('        <file>messages/ThemeError.qml</file>\n')
+        (frontend / 'main.qml').write_text('\n'.join([
+            '            id: theme',
+            '            function getThemeFile() {',
+            '                return apiThemePath;',
+            '            }',
+            '            onApiThemePathChanged: source = Qt.binding(getThemeFile)',
+            '                if (status == Loader.Error)',
+            '                    source = "messages/ThemeError.qml";',
+            '            onLoaded: item.focus = focus',
+            '            onLoaded: item.focus = focus', '']))
+        shutil.copyfile(ROOT / 'theme/FailurePreview.qml', self.root / 'theme/FailurePreview.qml')
+
         java = self.upstream / 'src/app/platform/android/src/org/pegasus_frontend/android'
         java.mkdir(parents=True)
         (java / 'MainActivity.java').write_text('// retained fixture activity\n')
@@ -87,6 +103,25 @@ class NativePrepareTests(unittest.TestCase):
         for name in ('apply_rom_cloud.py', 'apply_stopping_notes.py', 'apply_controller_check.py'):
             shutil.copyfile(ROOT / 'tools' / name, self.root / 'tools' / name)
         return payloads
+
+    def test_checked_memory_is_explicit_paired_and_rejects_later_source_drift(self):
+        target=self.upstream/'src/backend/model/memory';target.mkdir(parents=True)
+        for name in ('Memory.cpp','Memory.h'):
+            shutil.copyfile(ROOT/'native/theme-memory/upstream'/name,target/name)
+        run(self.upstream,'add','src');run(self.upstream,'commit','--quiet','-m','Fixture memory source')
+        self.manifest['commit']=run(self.upstream,'rev-parse','HEAD');self.write_spec()
+        destination=self.root/'native/theme-memory';destination.mkdir()
+        for name in ('Memory.cpp','Memory.h','upstream.json'):
+            shutil.copyfile(ROOT/'native/theme-memory'/name,destination/name)
+        shutil.copyfile(ROOT/'tools/apply_theme_memory.py',self.root/'tools/apply_theme_memory.py')
+        result=native.prepare(self.upstream,self.output,root=self.root,checked_memory=True)
+        self.assertTrue(result['components']['checkedMemory'])
+        self.assertEqual(native.verify(self.output),result)
+        self.assertIn('native/theme-memory/Memory.cpp',result['inputs'])
+        self.assertEqual((self.output/'source/src/backend/model/memory/Memory.cpp').read_bytes(),(destination/'Memory.cpp').read_bytes())
+        self.assertEqual((self.output/'checked-memory-integration-before/Memory.cpp').read_bytes(),(target/'Memory.cpp').read_bytes())
+        (self.output/'source/src/backend/model/memory/Memory.cpp').write_text('drift')
+        with self.assertRaises(ValueError):native.verify(self.output)
 
     def test_pc_runtime_is_explicit_and_paired_without_other_optional_modules(self):
         self.optional_inputs()
@@ -135,7 +170,7 @@ class NativePrepareTests(unittest.TestCase):
         result = native.prepare(self.upstream, self.output, True, self.root,
                                 stopping_notes=True, controller_check=True)
         self.assertEqual(result['components'], {'nativeBridge': True, 'romCloud': True, 'externalTheme': True,
-                                                'stoppingNotes': True, 'controllerCheck': True, 'pcRuntime': False})
+                                                'stoppingNotes': True, 'controllerCheck': True, 'pcRuntime': False, 'saveCopies': False})
         for component, names in payloads.items():
             for name in names:
                 input_name = 'native/' + component + '/' + name
@@ -154,6 +189,26 @@ class NativePrepareTests(unittest.TestCase):
         self.assertEqual(native.verify(self.output), result)
         self.assertFalse((self.output / 'PREPARATION-INCOMPLETE').exists())
 
+    def test_save_copies_flag_binds_the_read_only_module_and_survives_other_contexts(self):
+        self.optional_inputs()
+        destination = self.root / 'native/savecopies'
+        destination.mkdir()
+        for name in ('SaveCopies.h','SaveCopies.cpp','SaveCopyPictureProvider.h','SaveCopyPictureProvider.cpp','savecopies.pri'):
+            shutil.copyfile(ROOT/'native/savecopies'/name,destination/name)
+        shutil.copyfile(ROOT/'tools/apply_save_copies.py',self.root/'tools/apply_save_copies.py')
+        result=native.prepare(self.upstream,self.output,False,self.root,stopping_notes=True,save_copies=True)
+        self.assertTrue(result['components']['saveCopies'])
+        self.assertTrue(result['components']['stoppingNotes'])
+        self.assertTrue((self.output/'source/src/backend/library/savecopies/SaveCopies.cpp').is_file())
+        self.assertTrue((self.output/'source/src/backend/library/savecopies/SaveCopyPictureProvider.cpp').is_file())
+        self.assertIn('SaveCopyPictureProvider.cpp',(self.output/'source/src/backend/library/savecopies/savecopies.pri').read_text())
+        self.assertIn('library/savecopies/SaveCopyPictureProvider.cpp',(self.output/'source/src/backend/CMakeLists.txt').read_text())
+        cpp=(self.output/'source/src/backend/FrontendLayer.cpp').read_text()
+        self.assertIn('QStringLiteral("saveCopies")',cpp)
+        self.assertIn('QStringLiteral("stoppingNotes")',cpp)
+        self.assertEqual(native.verify(self.output),result)
+        self.assertIn('native/savecopies/SaveCopies.cpp',result['inputs'])
+
     def test_each_optional_flag_can_be_selected_independently(self):
         self.optional_inputs()
         for keyword, selected, excluded in [('stopping_notes', 'stoppingnotes', 'controllercheck'),
@@ -163,6 +218,77 @@ class NativePrepareTests(unittest.TestCase):
             self.assertTrue((output / 'source/src/backend/library' / selected).is_dir())
             self.assertFalse((output / 'source/src/backend/library' / excluded).exists())
             self.assertFalse(any(excluded in name for name in result['inputs']))
+
+    def test_all_optional_contexts_share_one_verified_theme_pair(self):
+        self.optional_inputs()
+        manifest = self.upstream / 'src/app/platform/android/AndroidManifest.xml'
+        manifest.write_text('<manifest xmlns:android="http://schemas.android.com/apk/res/android"><application /></manifest>')
+        run(self.upstream, 'add', 'src')
+        run(self.upstream, 'commit', '--quiet', '-m', 'Fixture combined contexts')
+        self.manifest['commit'] = run(self.upstream, 'rev-parse', 'HEAD')
+        self.write_spec()
+        for component, names, applier in [
+            ('pcgames', ('PcRuntime.h', 'PcRuntime.cpp', 'pcgames.pri', 'PcLaunchContract.java', 'PcRuntimeBridge.java'), 'apply_pc_runtime.py'),
+            ('savecopies', ('SaveCopies.h', 'SaveCopies.cpp', 'SaveCopyPictureProvider.h', 'SaveCopyPictureProvider.cpp', 'savecopies.pri'), 'apply_save_copies.py'),
+            ('failure-reports', ('FailureReports.h','FailureReports.cpp','DocumentCopy.h','DocumentCopy.cpp','failure-reports.pri','ThemeFailureReview.qml'), 'apply_failure_reports.py'),
+        ]:
+            destination = self.root / 'native' / component
+            destination.mkdir()
+            for name in names:
+                shutil.copyfile(ROOT / 'native' / component / name, destination / name)
+            shutil.copyfile(ROOT / 'tools' / applier, self.root / 'tools' / applier)
+        (self.root / 'theme/Rotation.js').write_text('// synthetic new theme dependency\n')
+        result = native.prepare(self.upstream, self.output, True, self.root,
+                                stopping_notes=True, controller_check=True, pc_runtime=True, save_copies=True, failure_reports=True)
+        self.assertTrue(all(result['components'].values()))
+        self.assertEqual(native.verify(self.output), result)
+        self.assertEqual((self.output / 'theme/Rotation.js').read_bytes(), (self.root / 'theme/Rotation.js').read_bytes())
+        cpp = (self.output / 'source/src/backend/FrontendLayer.cpp').read_text()
+        for context in ['romCloud', 'stoppingNotes', 'controllerCheck', 'pcRuntime', 'saveCopies', 'failureReports']:
+            self.assertEqual(cpp.count('QStringLiteral("' + context + '")'), 1, context)
+        for module in ['romcloud/RomCloud.cpp', 'stoppingnotes/StoppingNotes.cpp', 'controllercheck/ControllerCheck.cpp',
+                       'pcgames/PcRuntime.cpp', 'savecopies/SaveCopies.cpp', 'failure-reports/FailureReports.cpp']:
+            self.assertIn('src/backend/library/' + module, result['nativeFiles'])
+
+    def test_failure_preview_without_cloud_retains_optional_boundary(self):
+        self.optional_inputs()
+        for component, names, applier in [
+            ('savecopies', ('SaveCopies.h', 'SaveCopies.cpp', 'SaveCopyPictureProvider.h', 'SaveCopyPictureProvider.cpp', 'savecopies.pri'), 'apply_save_copies.py'),
+            ('failure-reports', ('FailureReports.h', 'FailureReports.cpp', 'DocumentCopy.h', 'DocumentCopy.cpp', 'failure-reports.pri', 'ThemeFailureReview.qml'), 'apply_failure_reports.py'),
+        ]:
+            destination = self.root / 'native' / component
+            destination.mkdir()
+            for name in names:
+                shutil.copyfile(ROOT / 'native' / component / name, destination / name)
+            shutil.copyfile(ROOT / 'tools' / applier, self.root / 'tools' / applier)
+        result = native.prepare(self.upstream, self.output, root=self.root,
+                                save_copies=True, failure_reports=True)
+        self.assertEqual(native.verify(self.output), result)
+        cpp = (self.output / 'source/src/backend/FrontendLayer.cpp').read_text()
+        self.assertNotIn('QStringLiteral("romCloud")', cpp)
+        self.assertNotIn('RomCloud::playObserved', cpp)
+        self.assertIn('FailureReports::observeSaveCopies', cpp)
+        self.assertIn('&QQmlEngine::warnings', cpp)
+        self.assertIn('&library::FailureReports::observeThemeWarnings', cpp)
+        self.assertFalse((self.output / 'source/src/backend/library/romcloud').exists())
+        cmake = (self.output / 'source/src/backend/CMakeLists.txt').read_text()
+        self.assertEqual(cmake.count('Qt5::AndroidExtras'), 1)
+        self.assertIn('library/failure-reports/DocumentCopy.cpp', cmake)
+        main = (self.output / 'source/src/frontend/main.qml').read_text()
+        self.assertIn('failureReports.captureThemeFailure()', main)
+        self.assertIn('failureReports.clearThemeFailure()', main)
+        self.assertIn('failureReports.beginThemeLoad()', main)
+        self.assertIn('novaSelectedThemeLoader', main)
+        self.assertEqual((self.output / 'source/src/frontend/messages/FailurePreview.qml').read_bytes(),
+                         (self.root / 'theme/FailurePreview.qml').read_bytes())
+        self.assertIn('src/frontend/messages/ThemeFailureReview.qml', result['nativeFiles'])
+        self.assertIn('theme/FailurePreview.qml', result['inputs'])
+
+
+    def test_failure_reports_require_matching_reader(self):
+        with self.assertRaisesRegex(ValueError, 'matching save-copy reader'):
+            native.prepare(self.upstream, self.output, root=self.root, failure_reports=True)
+        self.assertFalse(self.output.exists())
 
     def test_optional_payload_drift_retains_incomplete_marker(self):
         self.optional_inputs()

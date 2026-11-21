@@ -2,9 +2,16 @@
 
 `tools/save_catalogue.py` stores verified [save passports](SAVE-PASSPORT.md) in a private local SQLite catalogue. It provides dated entries, optional original PNG thumbnails, names and protected anchors, explicit rotation/trash/purge previews, undo, exact passport export and recovery staging. It sends no emulator commands, enrolls no service and never writes to a current save folder.
 
-This is a host-side storage/adapter implementation. The current QML Library and Android recent-saves picker are not wired to it. Python 3.11 or later with SQLite BLOB support is required. An Android/native client still needs an approved storage/runtime adapter and real controller/UI integration; the Python tests do not prove those paths.
+The catalogue remains host-side. The optional [Save copies view](SAVE-COPIES.md) can display an explicitly exported, private bundle in Library and recheck an archive checksum. It does not edit the catalogue, capture a checkpoint or restore live progress. Its Android deployment and physical acceptance remain separate gates. Python 3.11 or later with SQLite BLOB support is required for the host catalogue; Python tests do not prove device paths.
 
 ## Existing picker boundary
+
+The separate [RetroArch disk-load guard candidate](../native/retroarch-safe-load/README.md)
+requires a successful volatile backup before pinned disk-load/undo paths
+deserialize. It is not installed by Library, is not a durable catalogue copy and
+does not supply the trusted live export/import boundary described here. Controls
+offers conditional undo guidance and full readable notes; Library never executes
+a save/load from that guide. The selected slot is not presumed to be the newest.
 
 `nova-library/recent-saves` remains a read-only view of RetroArch manual numbered state slots. It sorts file observations by modification time, supports missing preview/time fallbacks and refuses ambiguous core folders. Numbered slots can be reused by the emulator, so that list is not immutable history. It does not capture native memory cards, protect named anchors or delete files. This catalogue imports a supported **idle/exported passport** instead of treating a filename/slot observation as a stable save identity. No picker permission or loading behavior was changed.
 
@@ -42,6 +49,18 @@ Timeline entries include `capturedAt` from the verified passport, `addedAt` from
 
 `rename(id, name, pinned=bool)` edits only an active entry's local label/pin. A pin requires a nonempty explicit name. Pinned anchors consume overall catalogue capacity but never count toward quick slots or become rotation/deletion candidates. Unpinning is explicit and refuses if it would overflow quick slots. Passport export preserves the original archive/hash; local catalogue labels and pins are not silently added to passport schema 1.
 
+For a client that displays or holds a proposed name/pin change, review it first:
+
+```python
+edit = history.plan_rename(checkpoint_id, 'Before Mantis', pinned=True)
+# Display edit.before, edit.after and the exact checkpoint identity/hash.
+history.apply(edit)
+```
+
+The metadata preview binds the catalogue ID, generation, checkpoint ID, original passport checksum, exact edition/recipe/save kind/runtime identity, and both the previous and proposed name/pin. Preview and apply each verify the archived bytes and manifest. Applying changes only the local name/pin columns; it neither duplicates the archive nor changes its provenance, thumbnail, dates or retention state. The returned list contains the edited checkpoint ID, matching retention `apply` results. `rename` uses this same operation immediately; callers displaying a preview must keep and apply that preview rather than call `rename` again.
+
+Any intervening catalogue write invalidates a metadata preview, including a second caller changing a label and changing it back. Reused, malformed, foreign or changed previews refuse without altering history. Unpinning rechecks exact-identity quick-slot capacity; trashed checkpoints must be undone first. Successful metadata edits invalidate older retention previews. These plans contain private save metadata and belong only in the private client flow. Their integrity token detects accidental alteration; it is not authentication or authorization.
+
 Default policy: 20 unpinned active checkpoints per **exact edition/recipe/kind/runtime identity**, 128 total entries including trash, 512 MiB total logical archive/thumbnail bytes, 256 MiB per passport, 64 trash entries/256 MiB trash bytes, and two-stage deletion with 30 days of undo. Policies are explicit positive bounded integers supplied as `retention=` on creation, persisted and checked on reopen. They cannot be silently replaced by another caller. SQLite metadata/allocated free pages and temporary rollback journal space are separate from logical payload bytes; purge is not a promise of reclaimed filesystem capacity.
 
 Import refuses when quick slots, total entries or logical bytes are full. It does not rotate or purge implicitly. To review rotation before making one quick slot available:
@@ -73,7 +92,7 @@ Only trash can be purged. Both branches remain independently addressable until a
 
 ## Atomicity and actual restore boundary
 
-Import streams into an SQLite BLOB, verifies source stability and checks the stored archive/manifest before committing. Full synchronous transactions keep previous history intact on failed capture, trash, undo or purge. Tests terminate a separate process immediately before commit and reopen the real database to verify rollback for capture, deletion and purge. Disk errors refuse rather than guessing success. Catalogue creation interrupted before initialization completes is not silently adopted as valid history.
+Import streams into an SQLite BLOB, verifies source stability and checks the stored archive/manifest before committing. Full synchronous transactions keep previous history intact on failed capture, metadata edits, trash, undo or purge. Tests terminate a separate process immediately before commit and reopen the real database to verify rollback for capture, metadata edits, deletion and purge. A failed unpin commit retains the protected anchor and its exact archive reference. Disk errors refuse rather than guessing success. Catalogue creation interrupted before initialization completes is not silently adopted as valid history.
 
 Recovery stages through an unnamed private temporary file into a **new directory** using `save_passport.stage_file`. It checks the exact target identity, archive hash/manifest, payload checksums and source stability; existing output directories are never replaced. A mismatch or unknown version/core remains a refusal for native saves as well as states. Full integrity review and byte staging do not prove an installed emulator can restore either format.
 
@@ -86,4 +105,4 @@ python3 -m unittest discover -s tests -p 'test_save_catalogue.py' -v
 python3 -m unittest discover -s tests -p 'test_save_passport.py' -v
 ```
 
-All fixtures use invented bytes in disposable local directories. They cover pinned-anchor rotation/full slots, separate kinds/editions, dated/reopened storage, bad/missing thumbnails, fixed identities, retained branches, existing-output refusal, bounded/full trash, expiry, delete/undo/purge, stale/forged plans, source/record corruption, failed writes and actual process interruption. They neither inspect nor mutate current owner saves.
+All fixtures use invented bytes in disposable local directories. They cover pinned-anchor rotation/full slots, reviewed name/pin edits, concurrent stale writes and changed-back metadata, separate kinds/editions, dated/reopened storage, bad/missing thumbnails, fixed identities, retained branches, existing-output refusal, bounded/full trash, expiry, delete/undo/purge, stale/forged plans, source/record corruption, failed writes and actual process interruption. They neither inspect nor mutate current owner saves.
