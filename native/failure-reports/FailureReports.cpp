@@ -72,9 +72,14 @@ int directory(const QString& path) {
     return fd;
 }
 bool same(const struct stat& a,const struct stat& b){return a.st_dev==b.st_dev && a.st_ino==b.st_ino;}
+// Android creates the app files directory as 0771 with the app's own per-app
+// group. Group write is only accepted for that group; other-write still refuses.
+bool ownerControlled(const struct stat& s){
+    return s.st_uid==::geteuid() && !(s.st_mode&0002) && (!(s.st_mode&0020) || s.st_gid==::getegid());
+}
 QVariantMap writePrivate(const QString& root,const QByteArray& data) {
     Fd parent(directory(root));struct stat base{};
-    if(parent.value<0 || ::fstat(parent.value,&base)!=0 || base.st_uid!=::geteuid() || (base.st_mode&0022))return failure("private_storage_unavailable");
+    if(parent.value<0 || ::fstat(parent.value,&base)!=0 || !ownerControlled(base))return failure("private_storage_unavailable");
     if(::mkdirat(parent.value,"failure-reports-v1",0700)!=0 && errno!=EEXIST)return failure("private_storage_unavailable");
     Fd dir(::openat(parent.value,"failure-reports-v1",O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC));struct stat folder{};
     if(dir.value<0 || ::fstat(dir.value,&folder)!=0 || folder.st_uid!=::geteuid() || (folder.st_mode&0077))return failure("private_storage_unavailable");
@@ -92,7 +97,7 @@ QVariantMap writePrivate(const QString& root,const QByteArray& data) {
     if(checked!=data || ::fstat(file.value,&verified)!=0 || !same(created,verified) || verified.st_size!=data.size()
        || (verified.st_mode&0777)!=0600 || ::fstatat(dir.value,name.constData(),&named,AT_SYMLINK_NOFOLLOW)!=0 || !same(named,created)
        || ::fstatat(parent.value,"failure-reports-v1",&namedFolder,AT_SYMLINK_NOFOLLOW)!=0 || !same(namedFolder,folder) || namedFolder.st_uid!=::geteuid() || (namedFolder.st_mode&0077)
-       || currentRoot.value<0 || ::fstat(currentRoot.value,&newBase)!=0 || !same(newBase,base) || newBase.st_uid!=::geteuid() || (newBase.st_mode&0022) || ::fsync(dir.value)!=0)return refuse();
+       || currentRoot.value<0 || ::fstat(currentRoot.value,&newBase)!=0 || !same(newBase,base) || !ownerControlled(newBase) || ::fsync(dir.value)!=0)return refuse();
     return {{"ok",true},{"exported",true},{"sent",false},{"bytes",data.size()},{"sha256",digest(data)},{"fileName",QString::fromLatin1(name)}};
 }
 #endif
@@ -101,7 +106,7 @@ QVariantMap appDataStorage(const QString& root) {
     // Use the opened private directory, so a path alias/replacement cannot
     // substitute another filesystem. This observes capacity, not a failure cause.
     Fd fd(directory(root));struct stat owner{};struct statvfs storage{};
-    if(fd.value>=0 && ::fstat(fd.value,&owner)==0 && owner.st_uid==::geteuid() && !(owner.st_mode&0022)
+    if(fd.value>=0 && ::fstat(fd.value,&owner)==0 && ownerControlled(owner)
        && ::fstatvfs(fd.value,&storage)==0) {
         constexpr quint64 maxJsonInteger=9007199254740991ULL;
         const quint64 unit=storage.f_frsize,blocks=storage.f_blocks,available=storage.f_bavail;

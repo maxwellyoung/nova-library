@@ -61,9 +61,19 @@ capabilities and error codes remain compatible with older consumers.
 
 This adds observations to the existing guards; it does not relax them, follow
 links, change permissions, create a missing store or implement restoration.
-Android application-context diagnosis and exact protected-build installation
-approval remain required. A same-UID host/probe pass cannot certify another
-SELinux/application context.
+A same-UID host/probe pass cannot certify another SELinux/application context.
+
+### App mount namespace (diagnosed on Nova, 21 Nov 2026)
+
+On Android 11+ each app runs in its own mount namespace, where `/data/user/0` is
+a symlink to `/data/data`. `run-as` and adb probes see the normal namespace, where
+it is a real directory, which is why they passed while the installed app reported
+`canonical_mismatch`. The wiring now canonicalizes `AppLocalDataLocation` once
+before constructing the reader; the reader itself still refuses any alias at or
+below its root. Android also creates that files directory `0771` with the app's
+own per-app group, so failure export accepts group write only for that group.
+Installed as review APK `393489bc`: Diablo's copy lists, and Check copy reports a
+matching checksum on Nova. Loading a copy in its game is still unverified.
 
 ## Attached checkpoint pictures
 

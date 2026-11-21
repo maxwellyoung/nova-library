@@ -156,6 +156,8 @@ private slots:
   QTest::addColumn<int>("mode");QTest::addColumn<int>("rootMode");QTest::addColumn<bool>("accepted");
   QTest::newRow("search-only")<<0111<<0700<<true;
   QTest::newRow("android-style")<<0711<<0700<<true;
+  QTest::newRow("android-files-own-group")<<0711<<0771<<true;
+  QTest::newRow("other-writable-root")<<0711<<0773<<false;
   QTest::newRow("search-denied")<<0000<<0700<<false;
   QTest::newRow("private-root-not-readable")<<0111<<0111<<false;
  }

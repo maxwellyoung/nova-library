@@ -37,12 +37,16 @@ def apply(source,backup,*,module=None):
     if any(cpp.count(x)!=1 for x in (anchor,create,load,'#include "library/DeviceLibrary.h"')) or not cpp.index(create)<cpp.index(anchor)<cpp.index(load):raise ValueError('Unsupported native context lifecycle')
     include='#include <QStandardPaths>'
     if cpp.count(include)>1:raise ValueError('Ambiguous standard-paths include')
+    if cpp.count('#include <QFileInfo>')==0:include+='\n#include <QFileInfo>'
     if include not in cpp:
         if cpp.count('#include <QQmlContext>')!=1:raise ValueError('Missing native include anchor')
         cpp=cpp.replace('#include <QQmlContext>','#include <QQmlContext>\n'+include,1)
     cpp=cpp.replace('#include "library/DeviceLibrary.h"','#include "library/DeviceLibrary.h"\n#include "library/savecopies/SaveCopies.h"',1)
     cpp=cpp.replace(anchor,anchor+'''\n    // NOVA_SAVE_COPIES_V1: immutable operator-delivered copies, never live restore.
-    const QString saveCopiesRoot = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
+    // Android app data isolation makes /data/user/0 a link to /data/data inside the
+    // app's own mount namespace. Resolve that system-owned ancestor once here; the
+    // reader still refuses any link or alias at or below its own root.
+    const QString saveCopiesRoot = QFileInfo(QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation)).canonicalFilePath();
     m_engine->rootContext()->setContextProperty(QStringLiteral("saveCopies"), saveCopiesRoot.isEmpty() ? nullptr : new library::SaveCopies(
         saveCopiesRoot + QStringLiteral("/save-copies-v1"), m_engine));''',1)
     after={FILES[0]:cpp.encode(),FILES[1]:(texts[FILES[1]]+'\n# '+MARKER+'\ninclude(library/savecopies/savecopies.pri)\n').encode(),
