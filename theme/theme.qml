@@ -34,7 +34,12 @@ FocusScope {
     property string saveCopyChecking: ""
     property string saveCopyPictureSource: ""
     property var saveCopyPictureRow: null
+    // The overlay that was showing before the current change settles; overlays
+    // only fade in when opened from the base screen (settledOverlay === "").
+    property string settledOverlay: ""
+    function settleOverlay() { settledOverlay = overlay; }
     onOverlayChanged: {
+        Qt.callLater(settleOverlay);
         if(documentNotice!=="")documentNotice="";
         if(overlay!=="copypicture" && saveCopyPictureSource!=="")clearSaveCopyPicture();
         if(overlay!=="failurepreview" && failurePreviewData.ticket)clearFailurePreview();
@@ -817,8 +822,6 @@ FocusScope {
             try { bridge.recordRomLaunch(e.id, e.title, e.systemId); }
             catch (err) { console.log("NOVA_LIBRARY ROM history staging unavailable"); }
         }
-        // Android can take seconds to show the emulator; acknowledge the press now.
-        say("Starting " + Lib.displayTitle(e) + "…");
         e.game.launch();
     }
 
@@ -3370,6 +3373,7 @@ FocusScope {
         objectName: "detailsSurface"
         anchors.fill: parent
         visible: (root.overlay === "details" || root.overlay === "facts") && root.current !== null
+        EnterFade { allowed: !root.reducedMotion; fromBase: root.settledOverlay === ""; rise: root.px(8) }
 
         MouseArea { anchors.fill: parent }
 
@@ -3472,6 +3476,7 @@ FocusScope {
         id: panel
         anchors.fill: parent
         visible: root.isListPanel()
+        EnterFade { allowed: !root.reducedMotion; fromBase: root.settledOverlay === ""; rise: root.px(8) }
 
         MouseArea { anchors.fill: parent }
 
@@ -3600,6 +3605,7 @@ FocusScope {
         id:failurePreviewLoader
         z:100
         anchors.fill:parent;visible:root.overlay === "failurepreview"
+        EnterFade { allowed: !root.reducedMotion; fromBase: root.settledOverlay === ""; rise: root.px(8) }
         active:visible;source:active?"FailurePreview.qml":""
         onLoaded: {
             item.report=Qt.binding(function(){return root.failurePreviewData;});
@@ -3648,6 +3654,7 @@ FocusScope {
     }
     SaveCopyPicture {
         anchors.fill:parent;visible:root.overlay === "copypicture"
+        EnterFade { allowed: !root.reducedMotion; fromBase: root.settledOverlay === ""; rise: root.px(8) }
         source:root.saveCopyPictureSource;copy:root.saveCopyPictureRow;title:root.saveCopyTitle
         sans:root.sans;ink:root.ink;quiet:root.quiet;unit:root.s;textScale:root.textScale;usableHeight:root.usableHeight
     }
@@ -3655,6 +3662,7 @@ FocusScope {
     StoppingNotebook {
         id:notebookPanel
         anchors.fill:parent;visible:root.overlay === "notebook"
+        EnterFade { allowed: !root.reducedMotion; fromBase: root.settledOverlay === ""; rise: root.px(8) }
         enabled:root.enabled && visible
         storage:root.notebookBridge;keyMap:api.keys;legacyEditable:root.canEdit && (!root.current || !root.current.cloudId)
         ground:root.ground;ink:root.ink;quiet:root.quiet;slab:root.slab
@@ -3669,6 +3677,7 @@ FocusScope {
         objectName: "inputProfilePanel"
         width:parent.width;height:root.usableHeight-root.px(90)
         visible:root.overlay === "inputprofile"
+        EnterFade { allowed: !root.reducedMotion; fromBase: root.settledOverlay === ""; rise: root.px(8) }
         ground:root.ground;ink:root.ink;sans:root.sans;textScale:root.textScale;s:root.s
         acceptLabel:root.kAccept;cancelLabel:root.kCancel
         onClosed:{root.overlay="guide";root.forceActiveFocus();}
@@ -3678,6 +3687,7 @@ FocusScope {
         id: controllerPanel
         anchors.fill: parent
         visible: root.overlay === "controller"
+        EnterFade { allowed: !root.reducedMotion; fromBase: root.settledOverlay === ""; rise: root.px(8) }
         check: root.controllerBridge
         keyMap: api.keys
         ground: root.ground; ink: root.ink; quiet: root.quiet; faint: root.faint; slab: root.slab
@@ -3694,6 +3704,7 @@ FocusScope {
         id: textPanel
         anchors.fill: parent
         visible: root.overlay === "text"
+        EnterFade { allowed: !root.reducedMotion; fromBase: root.settledOverlay === ""; rise: root.px(8) }
 
         MouseArea { anchors.fill: parent }
 
@@ -3995,6 +4006,7 @@ FocusScope {
         anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
         height: root.usableHeight
         visible: root.overlay === "cloud" || root.overlay === "failurepreview" && root.failureReturn === "cloud"
+        EnterFade { allowed: !root.reducedMotion; fromBase: root.settledOverlay === ""; rise: root.px(8) }
         enabled: root.overlay === "cloud"
         failureBridge:root.failureBridge
         onReviewFailure:root.openCloudFailure(editionId,attempt)
