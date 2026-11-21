@@ -196,6 +196,7 @@ FocusScope {
     readonly property string kKeep: Lib.keyLabel(api.keys.filters, "Y")
     readonly property string kPrev: Lib.keyLabel(api.keys.prevPage, "L1")
     readonly property string kNext: Lib.keyLabel(api.keys.nextPage, "R1")
+    readonly property string kDeck: Lib.keyLabel(api.keys.pageDown, "R2")
 
     readonly property var views: ["home", "library", "consoles", "threads", "apps"]
     readonly property var viewNames: ({ home: "Home", library: "Library", consoles: "Consoles", threads: "Collections", apps: "Apps" })
@@ -1575,10 +1576,10 @@ FocusScope {
 
     function phoneAudioApp() {return Lib.phoneAudioApp(rawEntries);}
 
-    function openDroidDeck() {
+    function openDroidDeck(fromHome) {
         var app = droidDeckApp();
         if (!app) { say("DroidDeck has no configured app route here."); return; }
-        say("Opening DroidDeck. Search this game in Steam there.");
+        say(fromHome ? "Opening DroidDeck." : "Opening DroidDeck. Search this game in Steam there.");
         playEdition(app);
     }
 
@@ -1842,6 +1843,7 @@ FocusScope {
                 { label: "Game details", value: kDetails },
                 { label: "Favourite / filters", value: kKeep },
                 { label: "Previous / next page", value: kPrev + " / " + kNext },
+                { label: "Open DroidDeck from Home", value: kDeck },
                 { label: "Native launcher menu", value: "Start (default)" }
             ];
         if (overlay === "refresh") {
@@ -2173,6 +2175,7 @@ FocusScope {
         if (current && (current.launchable || current.discMembers || current.cloudId || pcOptionsAvailable(current))) h.push({ k: kDetails, l: "Details", a: "details" });
         if (current) h.push({ k: kKeep, l: (currentPinned ? "Unfavourite" : "Favourite") + (current.discMembers ? " disc " + current.discNumber : ""), a: "keep" });
         if(view === "home")h.push({k:"↓",l:"Three to try",a:"choices"});
+        if (view === "home" && droidDeckApp()) h.push({ k: kDeck, l: "DroidDeck", a: "droiddeckhome" });
         if (view === "library") h.push({ k: kCancel, l: fromConsole ? "Consoles" : "Home", a: "libraryback" });
         if (view === "threads" && threadZone === "members") h.push({ k: kCancel, l: "Collections", a: "threadback" });
         return h;
@@ -2192,6 +2195,7 @@ FocusScope {
         else if (a === "setup") { openPanel("settings",4); panelActivate(4,1); }
         else if (a === "play") play(current);
         else if (a === "droiddeck") openDroidDeck();
+        else if (a === "droiddeckhome") openDroidDeck(true);
         else if (a === "phoneaudio") openPanel("phoneaudio",0);
         else if (a === "details") openDetails();
         else if (a === "dischelp") openDiscHelp();
@@ -2398,7 +2402,8 @@ FocusScope {
             else if (k.isDown(event)) openChoices();
             else if (k.isUp(event)) { zone = "nav"; navIndex = 0; }
             else if (k.isPageUp(event)) homeIndex = 0;
-            else if (k.isPageDown(event)) homeIndex = Math.max(0, homeEntries.length - 1);
+            // R2 opens DroidDeck from Home; without it, R2 still jumps to the last cover.
+            else if (k.isPageDown(event)) { if (droidDeckApp()) { if (!event.isAutoRepeat) openDroidDeck(true); } else homeIndex = Math.max(0, homeEntries.length - 1); }
             else if (k.isAccept(event)) { if (!allEntries.length) runHint("setup"); else play(current); }
             else if (k.isDetails(event)) openDetails();
             else if (k.isFilters(event)) toggleKeep(current);
