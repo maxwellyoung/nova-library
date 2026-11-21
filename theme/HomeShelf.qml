@@ -71,14 +71,24 @@ Item {
         clip: true; visible: surface.current !== null
         Row {
             id: row
-            property real focusX: 0
-            x: stage.width / 2 - focusX
-            height: stage.height - surface.px(12)
-            spacing: surface.px(54)
-            Behavior on x {
+            // One animated focus position drives the row offset and every cover's
+            // size, lift and veil, so the glide and the size change stay together.
+            property real pos: Math.max(0, surface.currentIndex)
+            Behavior on pos {
                 enabled: surface.active && !surface.reducedMotion
                 NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
             }
+            readonly property real focusX: {
+                var n = items.count, lo = Math.floor(pos), t = pos - lo;
+                var a = n ? items.itemAt(Math.min(n - 1, lo)) : null;
+                var b = n ? items.itemAt(Math.min(n - 1, lo + 1)) : null;
+                if (!a) return 0;
+                if (!b || t <= 0) return a.x + a.width / 2;
+                return (a.x + a.width / 2) * (1 - t) + (b.x + b.width / 2) * t;
+            }
+            x: stage.width / 2 - focusX
+            height: stage.height - surface.px(12)
+            spacing: surface.px(54)
             Repeater {
                 id: items
                 model: surface.entries
@@ -86,7 +96,9 @@ Item {
                     id: cell
                     objectName: "homeShelfCell_" + index
                     readonly property bool selected: index === surface.currentIndex
-                    readonly property real factor: selected ? 1 : 0.78
+                    // 1 at the focus position, 0 one step away; interpolates during the glide.
+                    readonly property real grow: Math.max(0, 1 - Math.abs(index - row.pos))
+                    readonly property real factor: 0.78 + 0.22 * grow
                     readonly property real ratio: artwork.item ? artwork.item.ratio : 2 / 3
                     readonly property var fit: Lib.fitArea(ratio, surface.coverArea * factor * factor,
                                                          surface.width * 0.46 * factor, surface.focusHeight * factor)
@@ -95,34 +107,28 @@ Item {
                     readonly property var caseArt: artwork.item
                     width: fit.w + edge * 2; height: row.height
                     opacity: Math.abs(index - surface.currentIndex) <= 2 ? 1 : 0
-                    Binding {
-                        target: row; property: "focusX"
-                        value: cell.x + cell.width / 2
-                        when: cell.selected
-                        restoreMode: Binding.RestoreNone
-                    }
                     Item {
                         id: object
                         objectName: "homeShelfObject_" + index
                         width: cell.width; height: cell.fit.h + cell.edge * 2
                         anchors.bottom: parent.bottom
-                        anchors.bottomMargin: cell.selected ? surface.px(9) : 0
+                        anchors.bottomMargin: surface.px(9) * cell.grow
                         // Shallow neutral case depth, not a claim about the original media.
                         Rectangle {
                             x: surface.px(8); y: surface.px(11); width: parent.width; height: parent.height
-                            radius: surface.px(3); color: "#000000"; opacity: cell.selected ? 0.18 : 0.09
+                            radius: surface.px(3); color: "#000000"; opacity: 0.09 + 0.09 * cell.grow
                         }
                         Rectangle {
                             anchors.fill: parent; radius: surface.px(3)
                             color: Qt.darker(surface.slab, 1.18)
-                            border.color: Qt.rgba(surface.ink.r, surface.ink.g, surface.ink.b, cell.selected ? 0.45 : 0.18)
+                            border.color: Qt.rgba(surface.ink.r, surface.ink.g, surface.ink.b, 0.18 + 0.27 * cell.grow)
                             border.width: 1
                         }
                         Rectangle {
                             x: surface.px(2); y: surface.px(3); width: cell.edge - surface.px(2)
                             height: parent.height - surface.px(6); radius: 1
                             color: Qt.lighter(surface.slab, 1.5)
-                            opacity: cell.selected ? 0.9 : 0.5
+                            opacity: 0.5 + 0.4 * cell.grow
                         }
                         Loader {
                             id: artwork
@@ -137,7 +143,8 @@ Item {
                                     // Keep decode size independent of fit/ratio: changing it
                                     // during selection reloads the image and cycles the fit.
                                     decodeHeight: 720
-                                    veil: cell.selected ? (modelData.launchable ? 0 : 0.24) : 0.32
+                                    fadeIn: !surface.reducedMotion
+                                    veil: 0.32 + ((modelData.launchable ? 0 : 0.24) - 0.32) * cell.grow
                                 }
                             }
                         }

@@ -16,6 +16,10 @@ Item {
     property color veilColor: "#0c0d0e"
     property real veil: 0
     property int decodeHeight: 720
+    // Fade in art that arrives after an asynchronous load. Cached art and
+    // reduced motion appear at once; callers opt in.
+    property bool fadeIn: false
+    property bool arrivedLate: false
 
     readonly property bool hasArt: entry !== null && entry.art !== "" && image.status !== Image.Error
     readonly property bool loaded: hasArt && image.status === Image.Ready && image.implicitHeight > 0
@@ -34,6 +38,12 @@ Item {
         fillMode: Image.PreserveAspectFit
         sourceSize.height: art.decodeHeight
         visible: art.loaded
+        opacity: art.loaded ? 1 : 0
+        Behavior on opacity {
+            enabled: art.fadeIn && art.arrivedLate
+            NumberAnimation { duration: 120; easing.type: Easing.OutCubic }
+        }
+        onStatusChanged: if (status === Image.Loading) art.arrivedLate = true
     }
 
     Rectangle {

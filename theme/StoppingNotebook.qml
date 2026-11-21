@@ -254,7 +254,9 @@ Item {
         Item {
             id:imageArea;width:panel.hasImage && mode!=="edit"?Math.floor(parent.width*.45):0;height:parent.height
             visible:width>0
-            Image {id:original;objectName:"notebookOriginal";anchors.fill:parent;source:notes.previewUrl || "";fillMode:Image.PreserveAspectFit;verticalAlignment:Image.AlignTop;asynchronous:true;cache:false}
+            Image {id:original;objectName:"notebookOriginal";anchors.fill:parent;source:notes.previewUrl || "";fillMode:Image.PreserveAspectFit;verticalAlignment:Image.AlignTop;asynchronous:true;cache:false
+                // Cap decode size: an imported photo would otherwise decode at full resolution.
+                sourceSize.width:1280;sourceSize.height:1280}
             Canvas {
                 id:annotationsCanvas
                 anchors.fill:parent;property var marks:notes.draft.annotations

@@ -30,7 +30,8 @@ Item {
         x:root.px(64);y:heading.y+heading.height+root.px(24)
         width:parent.width-root.px(128);height:Math.max(0,caption.y-root.px(20)-y)
         source:root.visible?root.source:""
-        sourceSize.width:2048;sourceSize.height:2048
+        // Never larger than a handheld screen needs; 2048² cost ~16 MB of texture per picture.
+        sourceSize.width:1280;sourceSize.height:1280
         fillMode:Image.PreserveAspectFit;cache:false;asynchronous:true
     }
     Text {

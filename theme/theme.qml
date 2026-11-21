@@ -389,7 +389,9 @@ FocusScope {
 
     function rebuildLibrary(keepId) {
         var previous = libraryEntries;
-        var out = Lib.sortEntries(Lib.filterEntries(Lib.groupEntries(rawEntries), filters, pins, searchText), sortMode);
+        // presentationEntries is regrouped whenever rawEntries changes; reusing it keeps
+        // each search keystroke to filter + sort instead of regrouping the catalogue.
+        var out = Lib.sortEntries(Lib.filterEntries(presentationEntries, filters, pins, searchText), sortMode);
         libraryEntries = out;
         setLibIndex(Lib.stableIndex(out, previous, libAnchorId, keepId), true, true);
     }
@@ -815,6 +817,8 @@ FocusScope {
             try { bridge.recordRomLaunch(e.id, e.title, e.systemId); }
             catch (err) { console.log("NOVA_LIBRARY ROM history staging unavailable"); }
         }
+        // Android can take seconds to show the emulator; acknowledge the press now.
+        say("Starting " + Lib.displayTitle(e) + "…");
         e.game.launch();
     }
 
@@ -2627,6 +2631,7 @@ FocusScope {
                             width: fit.w; height: fit.h
                             fontFamily: root.sans; slabColor: root.slab; textColor: root.ink; quietColor: root.quiet
                             decodeHeight: 240
+                            fadeIn: !root.reducedMotion
                         }
                     }
                 }

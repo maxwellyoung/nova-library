@@ -11,8 +11,11 @@ The selected work is centred, with nearby artwork kept in its original shape.
 A shallow neutral edge provides separation without claiming to reproduce a
 physical cartridge or disc. At most five artwork loaders are active; decode size
 is independent of layout to avoid a reload/ratio feedback loop. Selection uses
-an interruptible 120 ms transition, disabled by reduced motion and inactive
-surfaces. Android performance still needs measurement.
+one interruptible 120 ms focus position: the row offset and each cover's size,
+lift, edge and veil all follow it, so nothing snaps while the row glides.
+Artwork that arrives after an asynchronous load fades in over 120 ms. Both are
+disabled by reduced motion; the glide is also off on inactive surfaces.
+Android performance still needs measurement.
 
 Home loads the presentation through a `Loader`. A missing or invalid component
 must leave the main theme running and expose the selected title and a Library
